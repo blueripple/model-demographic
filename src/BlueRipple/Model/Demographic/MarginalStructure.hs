@@ -186,9 +186,9 @@ stencilToSubset (DED.Stencil indices) = S.fromList $ fmap snd $ filter fst $ zip
     subsetMap = IM.fromList $ fmap (, True) $ indices
     comboMap = IM.unionWith (||) allMap subsetMap
 
-productFld :: MarginalStructure w k -> FL.Fold (k, w) [(k,w)]
-productFld ms = case ms of
-  MarginalStructure _ _ -> undefined
+--productFld :: MarginalStructure w k -> FL.Fold (k, w) [(k,w)]
+--productFld ms = case ms of
+--  MarginalStructure _ _ -> undefined
 
 {-
 stencilsToProductFld :: forall k w . (BRK.FiniteSet k, Ord k, Monoid w) => [DED.Stencil Int] -> FL.Fold (k, w) [(k, w)]
