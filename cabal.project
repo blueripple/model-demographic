@@ -1,4 +1,4 @@
-packages: ./ ../data-ACS-Tables
+packages: ./
 jobs: 4
 with-compiler: ghc
 
