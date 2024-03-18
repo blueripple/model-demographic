@@ -862,7 +862,7 @@ predictorModel3 modelIdE predictorCacheDirE meanAsModel amM seM acs_C = do
       tp3InnerFld = innerFoldWD @(qs V.++ as) @(qs V.++ bs) @(PUMARowR ks) (F.rcast @(qs V.++ as)) (F.rcast @(qs V.++ bs))
       tp3RunConfig n = DTM3.RunConfig n False False Nothing
       tp3ModelConfig = DTM3.ModelConfig True (DTM3.dmr modelId (tp3NumKeys + 1)) -- +1 for pop density
-                       DTM3.AlphaHierNonCentered DTM3.NormalDist
+                       DTM3.AlphaHierNonCentered DTM3.ThetaHierarchical DTM3.NormalDist
       tp3MOM = if meanAsModel then DTM3.Mean else DTM3.Model tp3ModelConfig
       modelOne n = DTM3.runProjModel @ks @(PUMARowR ks) modelCacheDirE (tp3RunConfig n) tp3MOM acs_C nullVectorProjections_C ms tp3InnerFld
   predictor_C <- runAllModels predictorCacheKey modelOne acs_C projectionsToDiff_C

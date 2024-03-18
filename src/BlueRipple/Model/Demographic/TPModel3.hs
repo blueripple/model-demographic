@@ -25,9 +25,7 @@ module BlueRipple.Model.Demographic.TPModel3
   )
 where
 
---import qualified BlueRipple.Configuration as BR
 import qualified BlueRipple.Data.CachingCore as BRKU
---import qualified BlueRipple.Model.Demographic.DataPrep as DDP
 import qualified BlueRipple.Model.Demographic.EnrichData as DED
 import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified BlueRipple.Model.Demographic.TableProducts as DTP
@@ -44,7 +42,6 @@ import qualified Control.Foldl as FL
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
---import Data.Type.Equality (type (~))
 
 import qualified Data.List as List
 import qualified Frames as F
@@ -316,11 +313,16 @@ data ProjModelData outerK =
   }
 
 data AlphaModel = AlphaSimple | AlphaHierCentered | AlphaHierNonCentered deriving stock (Show)
+data ThetaModel = ThetaSimple | ThetaHierarchical
 
 alphaModelText :: AlphaModel -> Text
 alphaModelText AlphaSimple = "AS"
 alphaModelText AlphaHierCentered = "AHC"
 alphaModelText AlphaHierNonCentered = "AHNC"
+
+thetaModelText :: ThetaModel -> Text
+thetaModelText ThetaSimple = "TS"
+thetaModelText ThetaHierarchical = "TH"
 
 data Distribution = NormalDist | CauchyDist | StudentTDist
 
@@ -335,6 +337,7 @@ data ModelConfig =
     standardizeNVs :: Bool
   , designMatrixRow :: DM.DesignMatrixRow (VS.Vector Double)
   , alphaModel :: AlphaModel
+  , thetaModel :: ThetaModel
   , distribution :: Distribution
   }
 
@@ -345,10 +348,10 @@ momText Mean = "mean"
 momText (Model mc) = modelText mc
 
 modelText :: ModelConfig -> Text
-modelText (ModelConfig _ dmr' am d) = distributionText d <> "_" <> dmr'.dmName <> "_" <> alphaModelText am
+modelText (ModelConfig _ dmr' am tm d) = distributionText d <> "_" <> dmr'.dmName <> "_" <> alphaModelText am <> "_" <> thetaModelText tm
 
 dataText :: ModelConfig -> Text
-dataText (ModelConfig _ dmr' _ _) = dmr'.dmName
+dataText (ModelConfig _ dmr' _ _ _) = dmr'.dmName
 
 projModelData :: forall outerK . Typeable outerK
               => ModelConfig
@@ -390,14 +393,7 @@ projModelParameters mc pmd = do
   let stdNormalDWA :: (TE.TypeOneOf t [TE.EReal, TE.ECVec, TE.ERVec], TE.GenSType t) => TE.DensityWithArgs t
       stdNormalDWA = TE.DensityWithArgs SF.std_normal TNil
       numPredictors = DM.rowLength mc.designMatrixRow
-  -- for now all the thetas are iid std normals
 
-  theta <- if numPredictors > 0 then
-               (Theta . Just)
-               <$> DAG.simpleParameterWA
-               (TE.NamedDeclSpec "theta" $ TE.vectorSpec pmd.nPredictorsE [])
-               stdNormalDWA
-             else pure $ Theta Nothing
   sigma <-  Sigma
              <$> DAG.simpleParameterWA
              (TE.NamedDeclSpec "sigma" $ TE.realSpec [TE.lowerM $ TE.realE 0])
@@ -435,6 +431,25 @@ projModelParameters mc pmd = do
         (rawAlphaP :> alphaPs) DAG.TransformedParametersBlock
         (\(rawE :> muAlphaE :> muSigmaE :> TNil) -> DAG.DeclRHS $ muAlphaE `TE.plusE` (muSigmaE `TE.timesE` rawE))
         TNil (\_ _ -> pure ())
+  -- for now all the thetas are iid normal, but perchance hierarchical
+  theta <- if numPredictors == 0
+           then pure (Theta Nothing)
+           else case mc.thetaModel of
+                  ThetaSimple ->
+                    (Theta . Just)
+                    <$> DAG.simpleParameterWA
+                    (TE.NamedDeclSpec "theta" $ TE.vectorSpec pmd.nPredictorsE [])
+                    stdNormalDWA
+                  ThetaHierarchical -> do
+                    sigmaThetaP <-  DAG.simpleParameterWA
+                      (TE.NamedDeclSpec "sigmaTheta" $ TE.realSpec [TE.lowerM $ TE.realE 0])
+                      stdNormalDWA
+                    fmap (Theta . Just)
+                      $ DAG.addBuildParameter
+                      $ DAG.UntransformedP
+                      (TE.NamedDeclSpec "theta" $ TE.vectorSpec pmd.nPredictorsE []) [] (sigmaThetaP :> TNil)
+                      $ \(sigmaThetaE :> TNil) m -> TE.addStmt $ TE.sample m SF.normalS (TE.realE 0 :> sigmaThetaE :> TNil)
+
   case mc.distribution of
     NormalDist -> pure $ NormalProjModelParameters alpha theta sigma
     CauchyDist -> pure $ CauchyProjModelParameters alpha theta sigma
