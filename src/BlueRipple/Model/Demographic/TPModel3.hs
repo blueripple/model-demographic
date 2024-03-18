@@ -449,7 +449,6 @@ projModelParameters mc pmd = do
                       $ DAG.UntransformedP
                       (TE.NamedDeclSpec "theta" $ TE.vectorSpec pmd.nPredictorsE []) [] (sigmaThetaP :> TNil)
                       $ \(sigmaThetaE :> TNil) m -> TE.addStmt $ TE.sample m SF.normalS (TE.realE 0 :> sigmaThetaE :> TNil)
-
   case mc.distribution of
     NormalDist -> pure $ NormalProjModelParameters alpha theta sigma
     CauchyDist -> pure $ CauchyProjModelParameters alpha theta sigma
