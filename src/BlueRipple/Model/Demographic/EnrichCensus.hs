@@ -45,6 +45,7 @@ import qualified Knit.Report as K
 import Control.Lens (Lens',view, (^.))
 import qualified Control.Foldl as FL
 
+import qualified Data.List as List
 import qualified Data.Map as M
 import qualified Data.Map.Merge.Strict as MM
 import qualified Data.Set as S
@@ -738,7 +739,10 @@ projCovFld ms = DTP.diffCovarianceFldMS
 --  ViaMarginalStructure :: DMS.MarginalStructure w k -> ErrorProjectionSource w k
 
 subsetsNVP :: forall k r . (K.KnitEffects r, Ord k, Keyed.FiniteSet k) => [Set k] -> DTP.NullVectorProjections k -> K.Sem r (DTP.NullVectorProjections k)
-subsetsNVP subsets (DTP.NullVectorProjections fullC fullP _) = do
+subsetsNVP subsets nvp = do
+  let (fullC, fullP) = case nvp of
+        DTP.NullVectorProjections c p -> (c, p)
+        DTP.PCAWNullVectorProjections c p _ _ -> (c, p)
   let n = S.size $ Keyed.elements @k
       logLevel = K.Debug 1
       rawProjections = DED.mMatrix n $ fmap DMS.subsetToStencil subsets
@@ -757,7 +761,7 @@ subsetsNVP subsets (DTP.NullVectorProjections fullC fullP _) = do
       c = LA.ident n - p
   K.logLE logLevel $ "C=" <> toText (LA.dispf 1 c)
   K.logLE logLevel $ "Full C * subset projections=" <> toText (LA.dispf 1 (fullC LA.<> a))
-  pure $ DTP.NullVectorProjections c a' (LA.ident $ LA.rows a')
+  pure $ DTP.NullVectorProjections c a'
 
 cachedNVProjections :: forall rs ks r .
                        (K.KnitEffects r, BRCC.CacheEffects r
@@ -843,11 +847,12 @@ predictorModel3 :: forall (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) ks q
                 -> DTM3.MeanOrModel
                 -> Maybe (LA.Matrix Double)
                 -> Maybe [Set (F.Record ks)]
+                -> Maybe Double
                 -> K.ActionWithCacheTime r (F.FrameRec (PUMARowR ks))
                 -> K.Sem r (K.ActionWithCacheTime r (DTM3.Predictor (F.Record ks) Text)
                            , DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
                            )
-predictorModel3 modelIdE predictorCacheDirE tp3MOM amM seM acs_C = do
+predictorModel3 modelIdE predictorCacheDirE tp3MOM amM seM fracVarM acs_C = do
   let (modelId, modelCacheDirE) = case modelIdE of
         Left mId -> (mId, Left DTM3.model3A5CacheDir)
         Right mId -> (mId, Right DTM3.model3A5CacheDir)
@@ -855,16 +860,28 @@ predictorModel3 modelIdE predictorCacheDirE tp3MOM amM seM acs_C = do
   predictorCacheKey <- BRCC.cacheFromDirE predictorCacheDirE "Predictor.bin"
   let ms = marginalStructure @ks @as @bs @DMS.CellWithDensity @qs DMS.cwdWgtLens DMS.innerProductCWD'
   nullVectorProjections_C <- cachedNVProjections modelCacheDirE modelId ms seM acs_C
+  momF <- case fracVarM of
+    Nothing -> pure $ const tp3MOM
+    Just thr -> do
+      nvps <- K.ignoreCacheTime nullVectorProjections_C
+      case nvps of
+        DTP.NullVectorProjections _ _ -> K.knitError "covariance fraction threshold given but null vector projections are not whitened!"
+        DTP.PCAWNullVectorProjections _ _ s _ -> do
+          let tCov = VS.foldl (+) 0 s
+              indexedFracSoFar = zip [0..] (VS.toList $ VS.map (/ tCov) $ VS.postscanl (+) 0 s)
+              cutoffM = fst <$> List.find (( >= thr) . snd) indexedFracSoFar
+          cutoff <- K.knitMaybe ("predicotrModel3: Failed to find a cutoff satisfying the threshold (" <> show thr <> ")!") cutoffM
+          pure $ \n -> if n < cutoff then tp3MOM else DTM3.Mean
   let projectionsToDiff_C = case amM of
         Nothing -> DTP.RawDiff <$> nullVectorProjections_C
         Just am -> DTP.AvgdDiff am <$> nullVectorProjections_C
-  let tp3NumKeys = S.size (Keyed.elements @(F.Record (qs V.++ as))) + S.size (Keyed.elements @(F.Record (qs V.++ bs)))
+  let --tp3NumKeys = S.size (Keyed.elements @(F.Record (qs V.++ as))) + S.size (Keyed.elements @(F.Record (qs V.++ bs)))
       tp3InnerFld = innerFoldWD @(qs V.++ as) @(qs V.++ bs) @(PUMARowR ks) (F.rcast @(qs V.++ as)) (F.rcast @(qs V.++ bs))
       tp3RunConfig n = DTM3.RunConfig n False False Nothing
-      tp3ModelConfig = DTM3.ModelConfig True (DTM3.dmr modelId (tp3NumKeys + 1)) -- +1 for pop density
-                       DTM3.AlphaHierNonCentered DTM3.ThetaHierarchical DTM3.NormalDist
+--      tp3ModelConfig = DTM3.ModelConfig True (DTM3.dmr modelId (tp3NumKeys + 1)) -- +1 for pop density
+--                       DTM3.AlphaHierNonCentered DTM3.ThetaHierarchical DTM3.NormalDist
 --      tp3MOM = if meanAsModel then DTM3.Mean else DTM3.Model tp3ModelConfig
-      modelOne n = DTM3.runProjModel @ks @(PUMARowR ks) modelCacheDirE (tp3RunConfig n) tp3MOM acs_C nullVectorProjections_C ms tp3InnerFld
+      modelOne n = DTM3.runProjModel @ks @(PUMARowR ks) modelCacheDirE (tp3RunConfig n) (momF n) acs_C nullVectorProjections_C ms tp3InnerFld
   predictor_C <- runAllModels predictorCacheKey modelOne acs_C projectionsToDiff_C
   pure (predictor_C, ms)
 
