@@ -128,9 +128,11 @@ cwdInnerFld keyF datF = fmap M.elems $ marginalVecFld keyF
 
 bLogit :: Double -> Double -> Double
 bLogit eps x
-  | x < eps = Numeric.log eps
-  | x > 1 - eps = Numeric.log (1 / eps)
-  | otherwise = Numeric.log (x / (1 - x))
+  | x < eps = f eps
+  | x > 1 - eps = f (1 - eps)
+  | otherwise = f x
+  where
+    f y = Numeric.log (y / (1 - y))
 
 cwdListToLogitVec :: [DMS.CellWithDensity] -> VS.Vector Double
 cwdListToLogitVec = VS.fromList . fmap (bLogit 1e-10 . DMS.cwdWgt)

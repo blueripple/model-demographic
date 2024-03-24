@@ -593,3 +593,44 @@ nullVecsMS ms = case ms of
    (DMS.MarginalStructure _ _) -> NullVectorProjections cM (nullSpaceVectorsMS ms)
      where
        cM = DED.mMatrix (S.size $ BRK.elements @k) (DMS.msStencils ms)
+----
+optimalVector :: DED.EnrichDataEffects r
+               => NullVectorProjections k
+               -> LA.Vector LA.R
+               -> LA.Vector LA.R
+               -> K.Sem r (LA.Vector LA.R)
+optimalVector nvps pV tgtV = do
+--  K.logLE K.Info $ "Initial: V=" <> DED.prettyVector pV
+--  K.logLE K.Info $ "Tgt: V=" <> DED.prettyVector tgtV
+  let n = VS.length pV
+--      prToFull = projToFull nvps
+--      scaleGradM = fullToProjM nvps LA.<> LA.tr (fullToProjM nvps)
+--      objD v = (DED.klDivP v tgtV, negate $ DED.klGradP' v tgtV)
+      objD v = let d =  VS.zipWith (-) v tgtV in (LA.norm_2 d, 2 * d)
+      cM = nvpConstraints nvps
+      cRHS = cM LA.#> pV
+      constraintData = L.zip (VS.toList cRHS) (LA.toRows cM)
+      constraintF v (c, cRow) = ((cRow `LA.dot` v) - c, cRow)
+      constraintFs = fmap constraintF constraintData
+      nlConstraintsD = fmap (\cf -> NLOPT.EqualityConstraint (NLOPT.Scalar cf) 1e-6) constraintFs
+      lowerBounds = NLOPT.LowerBounds $ VS.replicate n 0
+      upperBounds = NLOPT.UpperBounds $ VS.replicate n 1
+--      nlConstraints = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar $ fst . cf) 1e-5) constraintFs
+      maxIters = 1000
+      absTol = 1e-6
+      absTolV = VS.fromList $ L.replicate n absTol
+      nlStop = NLOPT.ParameterAbsoluteTolerance absTolV :| [NLOPT.MaximumEvaluations maxIters]
+      nlAlgo = NLOPT.SLSQP objD [lowerBounds, upperBounds] [] nlConstraintsD
+--      nlAlgo = NLOPT.MMA objD nlConstraintsD
+      nlProblem =  NLOPT.LocalProblem (fromIntegral n) nlStop nlAlgo
+      nlSol = NLOPT.minimizeLocal nlProblem pV
+  case nlSol of
+    Left result -> PE.throw $ DED.TableMatchingException  $ "minConstrained: NLOPT solver failed: " <> show result
+    Right solution -> case NLOPT.solutionResult solution of
+      NLOPT.MAXEVAL_REACHED -> PE.throw $ DED.TableMatchingException $ "minConstrained: NLOPT Solver hit max evaluations (" <> show maxIters <> ")."
+      NLOPT.MAXTIME_REACHED -> PE.throw $ DED.TableMatchingException $ "minConstrained: NLOPT Solver hit max time."
+      _ -> do
+        let oWs = NLOPT.solutionParams solution
+--        K.logLE K.Info $ "solution=" <> DED.prettyVector oWs
+--        K.logLE K.Info $ "Solution: pV + oWs <.> nVs = " <> DED.prettyVector (pV + projToFull nvps oWs)
+        pure oWs

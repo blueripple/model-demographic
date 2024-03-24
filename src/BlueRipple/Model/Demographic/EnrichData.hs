@@ -518,6 +518,13 @@ klGradP nV mV = res
 
 --    f n m = n / m
 
+klGradP' :: LA.Vector LA.R -> LA.Vector LA.R -> LA.Vector LA.R
+klGradP' nV mV = res
+  where
+--    invSum = 1 / VS.sum nV
+    safeLogBase x y = Numeric.logBase (max x 1e-12) (max y 1e-12)
+    res = VS.zipWith (\x y -> 1 + safeLogBase x y) nV mV
+
 klPObjF :: LA.Vector LA.R -> LA.Vector LA.R -> (Double, LA.Vector LA.R)
 klPObjF nV mV = (klDivP nV mV, klGradP nV mV)
 

@@ -115,6 +115,8 @@ instance CatsText ASR where
   catsText = "ASR"
 instance CatsText ASRE where
   catsText = "ASRE"
+instance CatsText ASER where
+  catsText = "ASER"
 instance CatsText SRA where
   catsText = "SRA"
 instance CatsText SRA6 where
@@ -870,8 +872,9 @@ predictorModel3 modelIdE predictorCacheDirE tp3MOM amM seM fracVarM acs_C = do
           let tCov = VS.foldl (+) 0 s
               indexedFracSoFar = zip [0..] (VS.toList $ VS.map (/ tCov) $ VS.postscanl (+) 0 s)
               cutoffM = fst <$> List.find (( >= thr) . snd) indexedFracSoFar
-          cutoff <- K.knitMaybe ("predicotrModel3: Failed to find a cutoff satisfying the threshold (" <> show thr <> ")!") cutoffM
-          pure $ \n -> if n < cutoff then tp3MOM else DTM3.Mean
+          cutoff <- K.knitMaybe ("predictorModel3: Failed to find a cutoff satisfying the threshold (" <> show thr <> ")!") cutoffM
+          K.logLE K.Info $ "predictorModel3: variance threshold " <> show thr <> " led to mean rather than model at n= " <> show (cutoff + 1)
+          pure $ \n -> if n <= cutoff then tp3MOM else DTM3.Mean
   let projectionsToDiff_C = case amM of
         Nothing -> DTP.RawDiff <$> nullVectorProjections_C
         Just am -> DTP.AvgdDiff am <$> nullVectorProjections_C
