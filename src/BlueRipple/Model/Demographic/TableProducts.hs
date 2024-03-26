@@ -314,6 +314,11 @@ viaNearestOnSimplex nvps projWs prodV = do
   let n = VS.sum prodV
   pure $ VS.map (* n) $ projectToSimplex $ applyNSPWeights nvps projWs (VS.map (/ n) prodV)
 
+viaNearestOnSimplexPlus :: DED.EnrichDataEffects r => OptimalOnSimplexF r
+viaNearestOnSimplexPlus nvps projWs prodV = do
+  let n = VS.sum prodV
+      tgtV = projectToSimplex $ applyNSPWeights nvps projWs (VS.map (/ n) prodV)
+  VS.map (* n) <$> optimalVector (nullVectorProjections nvps) prodV tgtV
 
 -- after Chen & Ye: https://arxiv.org/pdf/1101.6081
 projectToSimplex :: VS.Vector Double -> VS.Vector Double
@@ -473,12 +478,6 @@ applyNSPWeightsFldG wl updateW logM ptd nsWsFldF =
         (MR.generalizeAssign $ MR.assign okF kwF)
         (FMR.ReduceFoldM innerFldM)
 
-nullSpaceVectorsMS :: forall k w . DMS.MarginalStructure w k -> LA.Matrix LA.R
-nullSpaceVectorsMS = \cases
-  (DMS.MarginalStructure subsets _) -> nullSpaceVectors (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
-
-nullSpaceVectors :: Int -> [DED.Stencil Int] -> LA.Matrix LA.R
-nullSpaceVectors n sts = LA.tr $ LA.nullspace $ DED.mMatrix n sts
 
 nullSpaceProjections :: (Ord k, Ord outerK, Show outerK, DED.EnrichDataEffects r, Foldable f)
                             => LA.Matrix LA.R
@@ -519,6 +518,21 @@ diffCovarianceFldMS wl outerKey catKey dat = \cases
                                            (fmap DMS.subsetToStencil subsets)
                                            (fmap snd . FL.fold ptFld)
 
+
+diffCovarianceFldSubsets :: forall outerK k row w .
+                            (Ord outerK)
+                         => Lens' w Double
+                         -> (row -> outerK)
+                         -> (row -> k)
+                         -> (row -> w)
+                         -> [Set k]
+                         -> DMS.MarginalStructure w k
+                         -> FL.Fold row (LA.Vector Double, LA.Herm Double)
+diffCovarianceFldSubsets wl outerKey catKey dat subsets = \cases
+  (DMS.MarginalStructure _ ptFld) -> diffCovarianceFld wl outerKey catKey dat
+                                           (fmap DMS.subsetToStencil subsets)
+                                           (fmap snd . FL.fold ptFld)
+
 diffCovarianceFld :: forall outerK k row w .
                      (Ord outerK, Ord k, BRK.FiniteSet k, Monoid w)
                   => Lens' w Double
@@ -532,7 +546,7 @@ diffCovarianceFld wl outerKey catKey dat sts prodTableF = LA.meanCov . LA.fromRo
   where
     allKs :: Set k = BRK.elements
     n = S.size allKs
-    nullVecs' = nullSpaceVectors n sts
+    (_, nullVecs') = nullSpaceDecomposition n sts
     wgtVec = VS.fromList . fmap (view wl)
     pcF :: [w] -> VS.Vector Double
     pcF = wgtVec . prodTableF . zip (S.toList allKs)
@@ -567,11 +581,49 @@ significantNullVecs fracCovToInclude cMatrix nullVecs cov = PCAWNullVectorProjec
     sigEVecs = LA.takeColumns nSig eigVecs
 -}
 
+nullSpaceDecompositionMS :: forall k w . BRK.FiniteSet k => DMS.MarginalStructure w k -> (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpaceDecompositionMS = \cases
+  (DMS.MarginalStructure subsets _) -> nullSpaceDecompositionSubsets @k subsets
+
+nullSpaceDecompositionSubsets :: forall k . (BRK.FiniteSet k, Ord k) => [Set k] -> (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpaceDecompositionSubsets subsets = nullSpaceDecomposition (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
+
+
+--nullSpaceVectors :: Int -> [DED.Stencil Int] -> LA.Matrix LA.R
+--nullSpaceVectors n sts = LA.tr $ LA.nullspace $ DED.mMatrix n sts
+
+--nullSpaceVectorsMS' :: forall k w . DMS.MarginalStructure w k -> (LA.Matrix LA.R, LA.Matrix LA.R)
+--nullSpaceVectorsMS' = \cases
+--  (DMS.MarginalStructure subsets _) -> nullSpaceVectors' (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
+
+nullSpaceDecomposition :: Int -> [DED.Stencil Int] -> (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpaceDecomposition n sts =
+  let cM = DED.mMatrix n sts
+      (u, s, v) = LA.svd cM
+      k = LA.ranksv (2.2e-16) (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
+      nVs = LA.tr $ LA.dropColumns k v
+      nonRedundantConstraints = LA.tr $ LA.takeColumns k v
+--      nVs = LA.tr $ LA.nullspace cM
+--      nonRedundantConstraints = let (u, _, _) = LA.compactSVD $ LA.tr cM in LA.tr u
+--      k = LA.ranksv 1 (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
+--      nVs = LA.dropColumns k v
+--      nonRedundantConstraints = LA.takeColumns k u
+--      nullVecs = LA.nullspaceSVD (Left 1) (LA.tr cM) (s, v) --
+--      nonRedundantConstraints = LA.orthSVD (Left 1) cM (u, s) --LA.takeColumns k u
+  in (nonRedundantConstraints, nVs)
+
+
 uncorrelatedNullVecsMS :: forall k w . DMS.MarginalStructure w k -> LA.Herm LA.R -> NullVectorProjections k
-uncorrelatedNullVecsMS ms = case ms of
-  (DMS.MarginalStructure _ _) -> uncorrelatedNullVecs cM (nullSpaceVectorsMS ms)
+uncorrelatedNullVecsMS ms cov = case ms of
+  (DMS.MarginalStructure _ _) -> uncorrelatedNullVecs cM nVs cov
     where
-      cM = DED.mMatrix (S.size $ BRK.elements @k) (DMS.msStencils ms)
+      (cM, nVs) = nullSpaceDecompositionMS ms
+
+uncorrelatedNullVecsSubsets :: forall k . (Ord k, BRK.FiniteSet k) => [Set k] -> LA.Herm LA.R -> NullVectorProjections k
+uncorrelatedNullVecsSubsets subsets cov = uncorrelatedNullVecs cM nVs cov
+  where
+    (cM, nVs) = nullSpaceDecompositionSubsets subsets
+
 
 uncorrelatedNullVecs :: (Ord k, BRK.FiniteSet k)
                      => LA.Matrix LA.R
@@ -588,11 +640,18 @@ nullVecs :: (Ord k, BRK.FiniteSet k)
          -> NullVectorProjections k
 nullVecs = NullVectorProjections
 
+nullVecsSubsets :: forall k . (Ord k, BRK.FiniteSet k) => [Set k]  -> NullVectorProjections k
+nullVecsSubsets subsets = NullVectorProjections cM nVs
+  where
+    (cM, nVs) = nullSpaceDecompositionSubsets subsets
+
+
 nullVecsMS :: forall k w . DMS.MarginalStructure w k  -> NullVectorProjections k
 nullVecsMS ms = case ms of
-   (DMS.MarginalStructure _ _) -> NullVectorProjections cM (nullSpaceVectorsMS ms)
+   (DMS.MarginalStructure _ _) -> NullVectorProjections cM nVs
      where
-       cM = DED.mMatrix (S.size $ BRK.elements @k) (DMS.msStencils ms)
+       (cM, nVs) = nullSpaceDecompositionMS ms
+
 ----
 optimalVector :: DED.EnrichDataEffects r
                => NullVectorProjections k
@@ -604,13 +663,17 @@ optimalVector nvps pV tgtV = do
 --  K.logLE K.Info $ "Tgt: V=" <> DED.prettyVector tgtV
   let n = VS.length pV
 --      prToFull = projToFull nvps
---      scaleGradM = fullToProjM nvps LA.<> LA.tr (fullToProjM nvps)
+  --      scaleGradM = fullToProjM nvps LA.<> LA.tr (fullToProjM nvps)
 --      objD v = (DED.klDivP v tgtV, negate $ DED.klGradP' v tgtV)
       objD v = let d =  VS.zipWith (-) v tgtV in (LA.norm_2 d, 2 * d)
       cM = nvpConstraints nvps
-      cRHS = cM LA.#> pV
+      nVs = fullToProjM nvps
+--  K.logLE K.Info $ "Constraints: " <> show (LA.size cM)
+--  K.logLE K.Info $ "Null-Space basis" <> show (LA.size nVs)
+--  let (u, _, _) = LA.compactSVD $ LA.tr cM
+  let cRHS = cM LA.#> pV
       constraintData = L.zip (VS.toList cRHS) (LA.toRows cM)
-      constraintF v (c, cRow) = ((cRow `LA.dot` v) - c, cRow)
+      constraintF (cVal, cRow) v = ((cRow `LA.dot` v) - cVal, cRow)
       constraintFs = fmap constraintF constraintData
       nlConstraintsD = fmap (\cf -> NLOPT.EqualityConstraint (NLOPT.Scalar cf) 1e-6) constraintFs
       lowerBounds = NLOPT.LowerBounds $ VS.replicate n 0

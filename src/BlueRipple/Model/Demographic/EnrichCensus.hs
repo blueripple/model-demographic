@@ -728,17 +728,66 @@ predictedCensusCASER' onSimplexM predictionCacheDirE predictSRCA_C predictACSRE_
 
 
 projCovFld :: forall rs ks . (ks F.⊆ rs, F.ElemOf rs GT.PUMA, F.ElemOf rs GT.StateAbbreviation, F.ElemOf rs DT.PopCount, F.ElemOf rs DT.PWPopPerSqMile)
-           => DMS.MarginalStructure DMS.CellWithDensity (F.Record ks) -> FL.Fold (F.Record rs) (LA.Vector Double, LA.Herm Double)
-projCovFld ms = DTP.diffCovarianceFldMS
-                DMS.cwdWgtLens
-                (F.rcast @[GT.StateAbbreviation, GT.PUMA])
-                (F.rcast @ks)
-                DTM3.cwdF
-                ms
+           => Maybe [Set (F.Record ks)] -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks) -> FL.Fold (F.Record rs) (LA.Vector Double, LA.Herm Double)
+projCovFld subsetsM ms = case subsetsM of
+  Nothing -> DTP.diffCovarianceFldMS
+             DMS.cwdWgtLens
+             (F.rcast @[GT.StateAbbreviation, GT.PUMA])
+             (F.rcast @ks)
+             DTM3.cwdF
+             ms
+  Just subsets -> DTP.diffCovarianceFldSubsets
+                  DMS.cwdWgtLens
+                  (F.rcast @[GT.StateAbbreviation, GT.PUMA])
+                  (F.rcast @ks)
+                  DTM3.cwdF
+                  subsets
+                  ms
 
 --data ErrorProjectionSource w k where
 --  ViaSubsets :: [Set k] -> ErrorProjectionSource w k
 --  ViaMarginalStructure :: DMS.MarginalStructure w k -> ErrorProjectionSource w k
+-- In the subset case
+cachedNVProjections :: forall rs ks r .
+                       (K.KnitEffects r, BRCC.CacheEffects r
+                       , Ord (F.Record ks)
+                       , Keyed.FiniteSet (F.Record ks)
+                       , ks F.⊆ rs, F.ElemOf rs GT.PUMA, F.ElemOf rs GT.StateAbbreviation, F.ElemOf rs DT.PopCount, F.ElemOf rs DT.PWPopPerSqMile)
+                    => Either Text Text
+                    -> Text
+                    -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
+                    -> Maybe (Text, [Set (F.Record ks)])
+                    -> K.ActionWithCacheTime r (F.FrameRec rs)
+                    -> K.Sem r (K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks)))
+cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
+  let fld = projCovFld (snd <$> subsetsM) ms
+  cacheKey <- case subsetsM of
+    Nothing -> BRCC.cacheFromDirE cacheDirE (modelId <> "_NVPs.bin")
+    Just (subsetCacheId, _) -> BRCC.cacheFromDirE cacheDirE (modelId <> "_" <> subsetCacheId <> "_NVPs.bin")
+  K.logLE K.Info $ "Retrieving or rebuilding marginal-structure null-space projections for key=" <> cacheKey
+  BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
+    K.logLE K.Info $ "Rebuilding null-space projections for key=" <> cacheKey
+    K.logLE K.Info $ "Computing covariance matrix of projected differences."
+    let (projMeans, projCovariances) = FL.fold fld dataRows
+        (eigVals, _) = LA.eigSH projCovariances
+    K.logLE K.Diagnostic
+      $ "mean=" <> toText (DED.prettyVector projMeans)
+      <> "\ncov=" <> toText (LA.disps 3 $ LA.unSym projCovariances)
+      <> "\ncovariance eigenValues: " <> DED.prettyVector eigVals
+    pure $ case subsetsM of
+      Nothing -> DTP.uncorrelatedNullVecsMS ms projCovariances
+      Just (_, subsets) -> DTP.uncorrelatedNullVecsSubsets subsets projCovariances
+--  nvp_C <- case subsetsM of
+--    Nothing -> pure msNvp_C
+--    Just subsets -> pure $ nullVecsSubsets subsets
+
+{-
+--      subsetProjectionsCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_subsetNVPs.bin")
+--      K.logLE K.Info $ "Retrieving or rebuilding subset-based null-space projections for key=" <> subsetProjectionsCacheKey
+--      BRCC.retrieveOrMakeD subsetProjectionsCacheKey msNvp_C $ subsetsNVP subsets
+        K.ignoreCacheTime nvp_C >>= \nvp -> K.logLE K.Info $ "Null-Space/Error-structure is " <> show (fst $ LA.size $ DTP.nvpProj nvp) <> " dimensional."
+        pure nvp_C
+-}
 
 subsetsNVP :: forall k r . (K.KnitEffects r, Ord k, Keyed.FiniteSet k) => [Set k] -> DTP.NullVectorProjections k -> K.Sem r (DTP.NullVectorProjections k)
 subsetsNVP subsets nvp = do
@@ -765,41 +814,7 @@ subsetsNVP subsets nvp = do
   K.logLE logLevel $ "Full C * subset projections=" <> toText (LA.dispf 1 (fullC LA.<> a))
   pure $ DTP.NullVectorProjections c a'
 
-cachedNVProjections :: forall rs ks r .
-                       (K.KnitEffects r, BRCC.CacheEffects r
-                       , Ord (F.Record ks)
-                       , Keyed.FiniteSet (F.Record ks)
-                       , ks F.⊆ rs, F.ElemOf rs GT.PUMA, F.ElemOf rs GT.StateAbbreviation, F.ElemOf rs DT.PopCount, F.ElemOf rs DT.PWPopPerSqMile)
-                    => Either Text Text
-                    -> Text
-                    -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
-                    -> Maybe [Set (F.Record ks)]
-                    -> K.ActionWithCacheTime r (F.FrameRec rs)
-                    -> K.Sem r (K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks)))
-cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
-  msNvp_C <- do
-    let fld = projCovFld ms
-    cacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_NVPs.bin")
-    K.logLE K.Info $ "Retrieving or rebuilding marginal-structure null-space projections for key=" <> cacheKey
-    BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
-      K.logLE K.Info $ "Rebuilding null-space projections for key=" <> cacheKey
-      K.logLE K.Info $ "Computing covariance matrix of projected differences."
-      let (projMeans, projCovariances) = FL.fold fld dataRows
-          (eigVals, _) = LA.eigSH projCovariances
-      K.logLE K.Diagnostic
-        $ "mean=" <> toText (DED.prettyVector projMeans)
-        <> "\ncov=" <> toText (LA.disps 3 $ LA.unSym projCovariances)
-        <> "\ncovariance eigenValues: " <> DED.prettyVector eigVals
-      pure $ DTP.uncorrelatedNullVecsMS ms projCovariances
-  nvp_C <- case subsetsM of
-    Nothing -> pure msNvp_C
-    Just subsets -> do
-      subsetProjectionsCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_subsetNVPs.bin")
-      K.logLE K.Info $ "Retrieving or rebuilding subset-based null-space projections for key=" <> subsetProjectionsCacheKey
-      BRCC.retrieveOrMakeD subsetProjectionsCacheKey msNvp_C $ subsetsNVP subsets
 
-  K.ignoreCacheTime nvp_C >>= \nvp -> K.logLE K.Info $ "Null-Space/Error-structure is " <> show (fst $ LA.size $ DTP.nvpProj nvp) <> " dimensional."
-  pure nvp_C
 
 innerFoldWD :: forall as bs rs . (F.ElemOf rs DT.PopCount, F.ElemOf rs DT.PWPopPerSqMile
                                  , Ord (F.Record as), Keyed.FiniteSet (F.Record as)
@@ -848,7 +863,7 @@ predictorModel3 :: forall (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) ks q
                 -> Either Text Text
                 -> DTM3.MeanOrModel
                 -> Maybe (LA.Matrix Double)
-                -> Maybe [Set (F.Record ks)]
+                -> Maybe (Text, [Set (F.Record ks)])
                 -> Maybe Double
                 -> K.ActionWithCacheTime r (F.FrameRec (PUMARowR ks))
                 -> K.Sem r (K.ActionWithCacheTime r (DTM3.Predictor (F.Record ks) Text)
