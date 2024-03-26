@@ -470,7 +470,8 @@ runProjModel clearCaches rc mc margKeyF _predKeyF predF = do
                          (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
                          dataName
       statesFilter = maybe id (\(_, sts) -> F.filterFrame ((`elem` sts) . view GT.stateAbbreviation)) rc.statesM
-  acsByPUMA_C <- fmap statesFilter <$> DDP.cachedACSa5ByPUMA ACS.acs1Yr2012_21 2021 -- most recent available
+      (srcWindow, cachedSrc) = ACS.acs1Yr2012_21
+  acsByPUMA_C <- fmap statesFilter <$> DDP.cachedACSa5ByPUMA srcWindow cachedSrc 2021 -- most recent available
   let dataCacheKey = cacheRoot <> "/acsCounts_" <> mc.alphaDMR.dmName <> maybe "" fst rc.statesM
   when clearCaches $ BRCC.clearIfPresentD dataCacheKey
   acsCountedByPUMA_C <- BRCC.retrieveOrMakeD

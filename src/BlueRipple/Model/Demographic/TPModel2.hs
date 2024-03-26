@@ -466,7 +466,8 @@ runProjModel clearCaches thinM rc mc ms predF = do
                          (modelText mc)
                          (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
                          dataName
-  acsByPUMA_C <- DDP.cachedACSa5ByPUMA ACS.acs1Yr2012_21 2021
+      (srcWindow, cachedSrc) = ACS.acs1Yr2012_21
+  acsByPUMA_C <- DDP.cachedACSa5ByPUMA srcWindow cachedSrc 2021
   let outerKey :: ([GT.StateAbbreviation, GT.PUMA] F.⊆ qs) => F.Record qs -> F.Record [GT.StateAbbreviation, GT.PUMA]
       outerKey = F.rcast
       catKeyO :: (ksO F.⊆ qs) => F.Record qs -> F.Record ksO

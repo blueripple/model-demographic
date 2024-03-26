@@ -88,7 +88,8 @@ runModel clearCaches mc (modeledT, modeledK) (fromT, cKey, dmr) = do
                          ("normal" <> fromT <> "_" <> DM.dmName dmr <> modelConfigSuffix mc)
                          (Just $ SC.GQNames "pp" dataName)
                          dataName
-  acs_C <- DDP.cachedACSa6ByState ACS.acs1Yr2012_21 2021 -- most recent available
+      (srcWindow, cachedSrc) = ACS.acs1Yr2012_21
+  acs_C <- DDP.cachedACSa6ByState srcWindow cachedSrc 2021 -- most recent available
 --  K.ignoreCacheTime acs_C >>= BRK.logFrame
   logLengthC acs_C "acsByState"
   let acsMN_C = fmap (DDP.acsByStateMN cKey modeledK) acs_C

@@ -415,7 +415,8 @@ runProjModel clearCaches rc mc ms datFld = do
                          (modelText mc)
                          (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
                          dataName
-  acsByPUMA_C <- DDP.cachedACSa5ByPUMA ACS.acs1Yr2012_21 2021
+      (srcWindow, cachedSrc) = ACS.acs1Yr2012_21
+  acsByPUMA_C <- DDP.cachedACSa5ByPUMA srcWindow cachedSrc 2021
 --  acsByPUMA <- K.ignoreCacheTime acsByPUMA_C
   let outerKey = F.rcast @[GT.StateAbbreviation, GT.PUMA]
       catKey = F.rcast @ks

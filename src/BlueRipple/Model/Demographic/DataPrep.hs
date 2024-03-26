@@ -139,13 +139,15 @@ type ACSa6ModelRow =  [BRDF.Year, GT.StateAbbreviation, GT.StateFIPS, GT.PUMA] V
 --acsSource = acs1Yr
 
 cachedACSa5 :: (K.KnitEffects r, BRK.CacheEffects r)
-  => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+  => PUMS.ACSWindow
+  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
   -> Int
   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ModelRow))
-cachedACSa5 source year = do
+cachedACSa5 acsWindow source year = do
   typedACS_C <- source
   stateAbbrXWalk_C <- BRL.stateAbbrCrosswalkLoader
-  let cacheKey = "model/demographic/data/acs" <> show year <> "_a5.bin"
+  let (PUMS.ACSWindow yrs) = acsWindow
+      cacheKey = "model/demographic/data/acs" <> show yrs <> "Yr_" <> show year <> "_a5.bin"
       typedACSForYear_C = F.filterFrame ((== year) . view BRDF.year) <$> typedACS_C
       deps = (,) <$> typedACSForYear_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
@@ -157,13 +159,15 @@ cachedACSa5 source year = do
     pure $ FST.mapMaybe (fmap F.rcast . simplifyAgeM . addEdu4 . addRace5) withSA
 
 cachedACSa6 :: (K.KnitEffects r, BRK.CacheEffects r)
-  => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+  => PUMS.ACSWindow
+  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
   -> Int
   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa6ModelRow))
-cachedACSa6 source year = do
+cachedACSa6 acsWindow source year = do
   typedACS_C <- source
   stateAbbrXWalk_C <- BRL.stateAbbrCrosswalkLoader
-  let cacheKey = "model/demographic/data/acs" <> show year <> "_a6.bin"
+  let (PUMS.ACSWindow yrs) = acsWindow
+      cacheKey = "model/demographic/data/acs" <> show yrs <> "Yr_" <> show year <> "_a6.bin"
       typedACSForYear_C = F.filterFrame ((== year) . view BRDF.year) <$> typedACS_C
       deps = (,) <$> typedACSForYear_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
@@ -175,13 +179,15 @@ cachedACSa6 source year = do
     pure $ fmap (F.rcast . addEdu4 . addRace5) withSA
 
 cachedACSa5ByState :: (K.KnitEffects r, BRK.CacheEffects r)
-                   => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+                   => PUMS.ACSWindow
+                   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
                    -> Int
                    -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ByStateR))
-cachedACSa5ByState source year = K.wrapPrefix "Model.Demographic.cachedACSa5ByState" $ do
+cachedACSa5ByState acsWindow source year = K.wrapPrefix "Model.Demographic.cachedACSa5ByState" $ do
   typedACS_C <- source
   stateAbbrXWalk_C <- BRL.stateAbbrCrosswalkLoader
-  let cacheKey = "model/demographic/data/acs" <> show year <> "ByState_a5.bin"
+  let PUMS.ACSWindow yrs = acsWindow
+      cacheKey = "model/demographic/data/acs" <> show yrs <> "Yr_" <> show year <> "ByState_a5.bin"
       typedACSForYear_C = F.filterFrame ((== year) . view BRDF.year) <$> typedACS_C
       deps = (,) <$> typedACSForYear_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
@@ -195,13 +201,15 @@ cachedACSa5ByState source year = K.wrapPrefix "Model.Demographic.cachedACSa5BySt
     pure $ fmap F.rcast withSA
 
 cachedACSa6ByState :: (K.KnitEffects r, BRK.CacheEffects r)
-                   => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+                   => PUMS.ACSWindow
+                   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
                    -> Int
                    -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa6ByStateR))
-cachedACSa6ByState source year = K.wrapPrefix "Model.Demographic.cachedACSa6ByState" $ do
+cachedACSa6ByState acsWindow source year = K.wrapPrefix "Model.Demographic.cachedACSa6ByState" $ do
   typedACS_C <- source
   stateAbbrXWalk_C <- BRL.stateAbbrCrosswalkLoader
-  let cacheKey = "model/demographic/data/acs" <> show year <> "ByState_a6.bin"
+  let PUMS.ACSWindow yrs = acsWindow
+      cacheKey = "model/demographic/data/acs" <> show yrs <> "Yr_" <> show year <> "ByState_a6.bin"
       typedACSForYear_C = F.filterFrame ((== year) . view BRDF.year) <$> typedACS_C
       deps = (,) <$> typedACSForYear_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
@@ -215,13 +223,15 @@ cachedACSa6ByState source year = K.wrapPrefix "Model.Demographic.cachedACSa6BySt
     pure $ fmap F.rcast withSA
 
 cachedACSa5ByPUMA :: (K.KnitEffects r, BRK.CacheEffects r)
-                  => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+                  => PUMS.ACSWindow
+                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
                   -> Int
                   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ByPUMAR))
-cachedACSa5ByPUMA source year = K.wrapPrefix "Model.Demographic.cachedACSa5ByPUMA" $ do
+cachedACSa5ByPUMA acsWindow source year = K.wrapPrefix "Model.Demographic.cachedACSa5ByPUMA" $ do
   typedACS_C <- source
   stateAbbrXWalk_C <- BRL.stateAbbrCrosswalkLoader
-  let cacheKey = "model/demographic/data/acs" <> show year <> "ByPUMA_a5.bin"
+  let PUMS.ACSWindow yrs = acsWindow
+      cacheKey = "model/demographic/data/acs" <> show yrs <> "Yr_" <> show year <> "ByPUMA_a5.bin"
       deps = (,) <$> typedACS_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
     K.logLE K.Info "Cached doesn't exist or is older than dependencies. Loading raw ACS rows..."
@@ -238,13 +248,15 @@ cachedACSa5ByPUMA source year = K.wrapPrefix "Model.Demographic.cachedACSa5ByPUM
     pure $ fmap F.rcast withSA
 
 cachedACSa6ByPUMA :: (K.KnitEffects r, BRK.CacheEffects r)
-                  => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+                  => PUMS.ACSWindow
+                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
                   -> Int
                   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa6ByPUMAR))
-cachedACSa6ByPUMA source year = K.wrapPrefix "Model.Demographic.cachedACSa6ByPUMA" $ do
+cachedACSa6ByPUMA acsWindow source year = K.wrapPrefix "Model.Demographic.cachedACSa6ByPUMA" $ do
   typedACS_C <- source
   stateAbbrXWalk_C <- BRL.stateAbbrCrosswalkLoader
-  let cacheKey = "model/demographic/data/acs" <> show year <> "ByPUMA_a6.bin"
+  let (PUMS.ACSWindow yrs) = acsWindow
+      cacheKey = "model/demographic/data/acs" <> show yrs <> "Yr_" <> show year <> "ByPUMA_a6.bin"
       typedACSForYear_C = F.filterFrame ((== year) . view BRDF.year) <$> typedACS_C
       deps = (,) <$> typedACSForYear_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
@@ -309,12 +321,13 @@ pumaToCDFld =
   in (\pc d -> pc F.&: d F.&: V.RNil) <$> countFld <*> densityFld
 
 cachedACSa5ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
-                => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+                => PUMS.ACSWindow
+                -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
                 -> Int
                 -> Maybe Int
                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ByCDR))
-cachedACSa5ByCD source year cdYearM = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
-  acsByPUMA_C <- cachedACSa5ByPUMA source year
+cachedACSa5ByCD acsWindow source year cdYearM = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
+  acsByPUMA_C <- cachedACSa5ByPUMA acsWindow source year
   let adjCDYear = case cdYearM of
         Nothing -> id
         Just y -> over BRDF.year (const y)
@@ -324,11 +337,12 @@ cachedACSa5ByCD source year cdYearM = K.wrapPrefix "Model.Demographic.cachedACSB
   cachedPUMAsToCDs @CategoricalsA5 cacheKey $ fmap (fmap adjCDYear) acsByPUMA_C
 
 cachedACSa6ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
-                => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+                => PUMS.ACSWindow
+                -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
                 -> Int
                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa6ByCDR))
-cachedACSa6ByCD source year = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
-  acsByPUMA_C <- cachedACSa6ByPUMA source year
+cachedACSa6ByCD acsWindow source year = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
+  acsByPUMA_C <- cachedACSa6ByPUMA acsWindow source year
   cachedPUMAsToCDs @CategoricalsA6 ("model/demographic/data/acs" <> show year <> "ByCD_a6.bin") acsByPUMA_C
 
 districtKey :: ([GT.StateAbbreviation, GT.CongressionalDistrict]  F.⊆ rs)
