@@ -600,10 +600,10 @@ nullSpaceDecompositionSubsets subsets = nullSpaceDecomposition (S.size $ BRK.ele
 nullSpaceDecomposition :: Int -> [DED.Stencil Int] -> (LA.Matrix LA.R, LA.Matrix LA.R)
 nullSpaceDecomposition n sts =
   let cM = DED.mMatrix n sts
-      (u, s, v) = LA.svd cM
+      (u, s, v') = LA.svd cM
       k = LA.ranksv (2.2e-16) (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
-      nVs = LA.tr $ LA.dropColumns k v
-      nonRedundantConstraints = LA.tr $ LA.takeColumns k v
+      nVs = LA.tr $ LA.dropColumns k v'
+      nonRedundantConstraints = LA.tr $ LA.takeColumns k v'
 --      nVs = LA.tr $ LA.nullspace cM
 --      nonRedundantConstraints = let (u, _, _) = LA.compactSVD $ LA.tr cM in LA.tr u
 --      k = LA.ranksv 1 (max (LA.rows cM) (LA.cols cM)) (LA.toList s)

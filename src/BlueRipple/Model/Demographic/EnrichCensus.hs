@@ -766,11 +766,9 @@ cachedNVProjections :: forall rs ks r .
                     -> K.Sem r (K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks)))
 cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
   let fld = projCovFld (snd <$> subsetsM) ms
-  cacheKey <- case subsetsM of
-    Nothing -> BRCC.cacheFromDirE cacheDirE (modelId <> "_NVPs.bin")
-    Just (subsetCacheId, _) -> BRCC.cacheFromDirE cacheDirE (modelId <> "_" <> subsetCacheId <> "_NVPs.bin")
+  cacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_NVPs.bin")
   K.logLE K.Info $ "Retrieving or rebuilding marginal-structure null-space projections for key=" <> cacheKey
-  BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
+  msNvp_C <- BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
     K.logLE K.Info $ "Rebuilding null-space projections for key=" <> cacheKey
     K.logLE K.Info $ "Computing covariance matrix of projected differences."
     let (projMeans, projCovariances) = FL.fold fld dataRows
@@ -779,12 +777,12 @@ cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
       $ "mean=" <> toText (DED.prettyVector projMeans)
       <> "\ncov=" <> toText (LA.disps 3 $ LA.unSym projCovariances)
       <> "\ncovariance eigenValues: " <> DED.prettyVector eigVals
-    pure $ case subsetsM of
-      Nothing -> DTP.uncorrelatedNullVecsMS ms projCovariances
-      Just (_, subsets) -> DTP.uncorrelatedNullVecsSubsets subsets projCovariances
---  nvp_C <- case subsetsM of
---    Nothing -> pure msNvp_C
---    Just subsets -> pure $ nullVecsSubsets subsets
+    pure $ DTP.uncorrelatedNullVecsMS ms projCovariances
+  case subsetsM of
+    Nothing -> pure msNvp_C
+    Just (subsetCacheId, subsets) -> do
+      subsetNVPCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_" <> subsetCacheId <> "_NVPs.bin")
+      BRCC.retrieveOrMakeD subsetNVPCacheKey msNvp_C $ subsetsNVP subsets
 
 {-
 --      subsetProjectionsCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_subsetNVPs.bin")
@@ -793,6 +791,21 @@ cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
         K.ignoreCacheTime nvp_C >>= \nvp -> K.logLE K.Info $ "Null-Space/Error-structure is " <> show (fst $ LA.size $ DTP.nvpProj nvp) <> " dimensional."
         pure nvp_C
 -}
+{-
+subsetsNVP' :: forall k r . (K.KnitEffects r, Ord k, Keyed.FiniteSet k) =>  DTP.NullVectorProjections k -> [Set k] -> K.Sem r (DTP.NullVectorProjections k)
+subsetsNVP' nvp subsets  = do
+  let logLevel = K.Debug 1
+      (fullC, fullP) = case nvp of
+        DTP.NullVectorProjections c p -> (c, p)
+        DTP.PCAWNullVectorProjections c p _ _ -> (c, p)
+      n = S.size $ Keyed.elements @k
+      sCM = DED.mMatrix n $ fmap DMS.subsetToStencil subsets
+      sCMf = sCM LA.<> LA.tr fullP LA.<> fullP
+      (u, s, v) = LA.svd sCMf
+      k = LA.ranksv (2.2e-16) (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
+      a = LA.tr $ LA.takeColumns k v
+-}
+
 
 subsetsNVP :: forall k r . (K.KnitEffects r, Ord k, Keyed.FiniteSet k) => [Set k] -> DTP.NullVectorProjections k -> K.Sem r (DTP.NullVectorProjections k)
 subsetsNVP subsets nvp = do
