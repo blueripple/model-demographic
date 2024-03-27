@@ -201,7 +201,7 @@ nullVecProjectionsModelDataFldCheck wl ms nvps outerKey catKey datF datFold = ca
 data ProjData outerK =
   ProjData
   {
-    pdNPredictors :: Int
+    pdNPredictrs :: Int
   , pdRows :: [ProjDataRow outerK]
   }
 {-

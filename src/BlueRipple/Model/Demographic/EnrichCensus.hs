@@ -375,6 +375,7 @@ tableProducts cacheKey caTables_C cbTables_C = do
                               (MR.foldAndLabel (fmap F.toFrame FL.list) (,))
                            )
           densityFilter r = let x = r ^. DT.pWPopPerSqMile in x < 0  || x > 1e6 && r ^. DT.popCount > 0
+          popCheckFilter = (< 0) . view DT.popCount
           outerKeyF :: (outerK F.⊆ rs) => F.Record rs -> F.Record outerK
           outerKeyF = F.rcast
           caF :: (KeysWD (cs V.++ as) F.⊆ rs) => F.Record rs -> F.Record (KeysWD (cs V.++ as))
@@ -394,9 +395,13 @@ tableProducts cacheKey caTables_C cbTables_C = do
             checkFrames k ca' cb'
             let res = tableProductWithDensity @cs @as @bs ca' cb'
                 resExc = F.filterFrame densityFilter res
+                popExc = F.filterFrame popCheckFilter res
             when (FL.fold FL.length resExc > 0) $ do
               K.logLE K.Error $ "Bad densities after tableProductWithDensity at k=" <> show k
               BRLC.logFrame resExc
+            when (FL.fold FL.length popExc > 0) $ do
+              K.logLE K.Error $ "Bad populations after tableProductWithDensity at k=" <> show k
+              BRLC.logFrame popExc
             pure res
           whenMissingCAF k _ = K.knitError $ "Missing ca table for k=" <> show k
           whenMissingCBF k _ = K.knitError $ "Missing cb table for k=" <> show k

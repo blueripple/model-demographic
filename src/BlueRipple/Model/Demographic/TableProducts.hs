@@ -279,7 +279,8 @@ optimalWeights :: DED.EnrichDataEffects r
                -> LA.Vector LA.R
                -> K.Sem r (LA.Vector LA.R)
 optimalWeights objectiveF nvps projWs pV = do
---  K.logLE K.Info $ "Initial: pV + nsWs <.> nVs = " <> DED.prettyVector (pV + nsWs LA.<# nsVs)
+--  K.logLE K.Info $ "optimalWeights: pV = " <> DED.prettyVector pV
+--  K.logLE K.Info $ "optimalWeights: Initial pV + nsWs <.> nVs = " <> DED.prettyVector (pV + projToFull nvps projWs)
   let n = VS.length projWs
 --      prToFull = projToFull nvps
 --      scaleGradM = fullToProjM nvps LA.<> LA.tr (fullToProjM nvps)
@@ -291,7 +292,7 @@ optimalWeights objectiveF nvps projWs pV = do
       nlConstraintsD = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar cf) 1e-6) constraintFs
 --      nlConstraints = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar $ fst . cf) 1e-5) constraintFs
       maxIters = 1000
-      absTol = 1e-6
+      absTol = 1e-5
       absTolV = VS.fromList $ L.replicate n absTol
       nlStop = NLOPT.ParameterAbsoluteTolerance absTolV :| [NLOPT.MaximumEvaluations maxIters]
       nlAlgo = NLOPT.SLSQP objD [] nlConstraintsD []
