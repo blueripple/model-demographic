@@ -37,6 +37,7 @@ library
    , blueripple-data-types
    , blueripple-data-ACS-PUMS
    , blueripple-data-ACS-Tables
+   , blueripple-model-tools
    , array >= 0.5 && < 0.6
    , Frames >= 0.7 && < 0.8
    , Frames-utils >= 0.3.1

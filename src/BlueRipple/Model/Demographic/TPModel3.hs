@@ -29,7 +29,9 @@ import qualified BlueRipple.Data.CachingCore as BRKU
 import qualified BlueRipple.Model.Demographic.EnrichData as DED
 import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified BlueRipple.Model.Demographic.TableProducts as DTP
+import qualified BlueRipple.Model.StanTools as MST
 
+import qualified BlueRipple.Data.CachingCore as BRCC
 import qualified BlueRipple.Data.Keyed as BRK
 import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Geographic as GT
@@ -604,8 +606,9 @@ runProjModel cacheDirE rc mom acs_C nvps_C ms datFld = K.wrapPrefix "TPModel3.ru
     Model mc -> do
       let modelData_C = ProjData (DM.rowLength mc.designMatrixRow) <$> rowData_C
           dataName = "projectionData_" <> dataText mc <> "_N" <> show rc.nvIndex <> maybe "" fst rc.statesM
-          runnerInputNames = SC.RunnerInputNames
-                             ("br-2022-Demographics/stan/nullVecProj_M3_A5")
+      stanDir <- K.liftKnit MST.stanDir >>= K.knitMaybe "runModel: empty stanDir!" . BRCC.insureFinalSlash
+      let runnerInputNames = SC.RunnerInputNames
+                             (stanDir <> "demographic/nullVecProj_M3_A5")
                              (modelText mc)
                              (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
                              dataName

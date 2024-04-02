@@ -29,6 +29,9 @@ import qualified BlueRipple.Data.CachingCore as BRCC
 import qualified BlueRipple.Model.Demographic.DataPrep as DDP
 import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified BlueRipple.Model.Demographic.TableProducts as DTP
+import qualified BlueRipple.Model.StanTools as MST
+
+
 
 import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Geographic as GT
@@ -410,8 +413,9 @@ runProjModel :: forall (ks :: [(Symbol, Type)]) md r .
 runProjModel clearCaches rc mc ms datFld = do
   let cacheDirE = (if clearCaches then Left else Right) "model/demographic/nullVecProjModel1_A5/"
       dataName = "projectionData_" <> dataText mc
-      runnerInputNames = SC.RunnerInputNames
-                         ("br-2022-Demographics/stan/nullVecProj_M1_A5")
+  stanDir <- K.liftKnit MST.stanDir >>= K.knitMaybe "runModel: empty stanDir!" . BRCC.insureFinalSlash
+  let runnerInputNames = SC.RunnerInputNames
+                         (stanDir <> "demographic/nullVecProj_M1_A5")
                          (modelText mc)
                          (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
                          dataName

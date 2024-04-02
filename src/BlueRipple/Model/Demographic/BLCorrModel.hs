@@ -29,6 +29,7 @@ where
 
 import qualified BlueRipple.Data.CachingCore as BRCC
 import qualified BlueRipple.Model.Demographic.DataPrep as DDP
+import qualified BlueRipple.Model.StanTools as MST
 
 import qualified BlueRipple.Data.Keyed as BRK
 import qualified BlueRipple.Data.Types.Demographic as DT
@@ -464,8 +465,9 @@ runProjModel clearCaches rc mc margKeyF _predKeyF predF = do
       cacheDirE = (if clearCaches then Left else Right) cacheRoot
       dataName = "blCorrData_" <> dataText mc <> maybe "" fst rc.statesM
       countF r = PopAndDensity (view DT.popCount r) (view DT.pWPopPerSqMile r)
-      runnerInputNames = SC.RunnerInputNames
-                         ("br-2022-Demographics/stan/blCorrModel")
+  stanDir <- K.liftKnit MST.stanDir >>= K.knitMaybe "runModel: empty stanDir!" . BRCC.insureFinalSlash
+  let runnerInputNames = SC.RunnerInputNames
+                         (stanDir <> "demographic/blCorrModel")
                          (modelText mc)
                          (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
                          dataName

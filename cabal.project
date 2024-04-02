@@ -19,6 +19,7 @@ import: ../cabal_repo_imports/data-tools.project
 import: ../cabal_repo_imports/data-loading.project
 import: ../cabal_repo_imports/data-ACS-Tables.project
 import: ../cabal_repo_imports/data-ACS-PUMS.project
+import: ../cabal_repo_imports/model-tools.project
 import: ../cabal_repo_imports/haskell-stan.project
 import: ../cabal_repo_imports/knit-haskell.project
 import: ../cabal_repo_imports/Frames-streamly.project
