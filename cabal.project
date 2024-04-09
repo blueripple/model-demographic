@@ -10,15 +10,19 @@ allow-newer: polysemy-zoo:ghc-prim, streamly-core
            , generic-trie:base
            , streamly-bytestring:streamly-core
            , nonlinear-optimization:primitive
+           , nonlinear-optimization:vector
+           , discrimination:primitive
 
 flags: +streamly9
 
 import: ../cabal_repo_imports/small-data-sets.project
+import: ../cabal_repo_imports/post-tools.project
 import: ../cabal_repo_imports/data-types.project
 import: ../cabal_repo_imports/data-tools.project
 import: ../cabal_repo_imports/data-loading.project
 import: ../cabal_repo_imports/data-ACS-Tables.project
 import: ../cabal_repo_imports/data-ACS-PUMS.project
+import: ../cabal_repo_imports/model-tools.project
 import: ../cabal_repo_imports/haskell-stan.project
 import: ../cabal_repo_imports/knit-haskell.project
 import: ../cabal_repo_imports/Frames-streamly.project
@@ -28,3 +32,4 @@ import: ../cabal_repo_imports/Frames-hvega.project
 import: ../cabal_repo_imports/hvega-utils.project
 import: ../cabal_repo_imports/map-reduce-folds.project
 import: ../cabal_repo_imports/heidi.project
+import: ../cabal_repo_imports/hTensor.project

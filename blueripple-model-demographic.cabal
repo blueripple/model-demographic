@@ -20,6 +20,7 @@ library
   exposed-modules: BlueRipple.Model.Demographic.DataPrep
                  , BlueRipple.Model.Demographic.EnrichData
                  , BlueRipple.Model.Demographic.TableProducts
+                 , BlueRipple.Model.Demographic.NullSpaceBasis
                  , BlueRipple.Model.Demographic.MarginalStructure
                  , BlueRipple.Model.Demographic.EnrichCensus
                  , BlueRipple.Model.Demographic.TPModel3
@@ -37,6 +38,7 @@ library
    , blueripple-data-types
    , blueripple-data-ACS-PUMS
    , blueripple-data-ACS-Tables
+   , blueripple-model-tools
    , array >= 0.5 && < 0.6
    , Frames >= 0.7 && < 0.8
    , Frames-utils >= 0.3.1
@@ -53,6 +55,7 @@ library
    , hs-cmdstan >= 0.1 && < 0.2
    , hmatrix >= 0.20 && < 0.21
    , hmatrix-nlopt >= 0.2 && < 0.3
+   , hTensor >= 0.9.1
    , knit-haskell >= 0.8 && < 0.11
    , lens >= 5 && < 6
    , map-reduce-folds >= 0.1.1.1 && < 0.2
