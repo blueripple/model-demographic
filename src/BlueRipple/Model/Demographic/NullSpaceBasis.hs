@@ -1,9 +1,11 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -24,8 +26,10 @@ module BlueRipple.Model.Demographic.NullSpaceBasis
 where
 
 import qualified BlueRipple.Model.Demographic.EnrichData as DED
+import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified Data.Map.Strict as M
 import qualified Data.List as List
+import qualified Data.Set as Set
 
 import qualified Numeric.LinearAlgebra as LA
 import qualified Numeric.LinearAlgebra.Array as A
@@ -39,7 +43,7 @@ newtype Dimensions = Dimensions { dimensions :: [Int] }
 newtype Indices = Indices { indices :: [Int] }
 
 -- a subset specified by choosing some indices
-newtype Subset = Subset { subset :: [Int] }
+newtype Subset = Subset { subset :: [Int] } deriving newtype (Eq, Ord)
 
 -- given a set of stencils, i.e., rows of constraints on distributions,
 -- which are possibly linearly-dependent,
@@ -113,8 +117,56 @@ interactionVC dims sub subsetIs =
 subsetIndices :: Dimensions -> Subset -> [Indices]
 subsetIndices dims subs = fmap Indices $ traverse (\si -> [1..((dimensions dims List.!! (si - 1)) - 1)]) $ subset subs
 
-interactionBasis :: Dimensions -> Subset -> LA.Matrix LA.R
-interactionBasis dims sub = LA.fromColumns $ fmap oneVec subIs
+subsetInteractionBasis :: Dimensions -> Subset -> LA.Matrix LA.R
+subsetInteractionBasis dims sub = LA.fromColumns $ fmap oneVec subIs
   where
     oneVec = interactionV dims sub
     subIs = subsetIndices dims sub
+
+powerSetInteractionBasis :: Dimensions -> Subset -> LA.Matrix LA.R
+powerSetInteractionBasis dims subs =
+  LA.fromColumns
+  $ mconcat
+  $ fmap (LA.toColumns . subsetInteractionBasis dims) subsets
+  where
+    subsets = fmap Subset $ powerset $ subset subs
+
+interactionBasis :: Dimensions -> Set.Set Subset -> LA.Matrix LA.R
+interactionBasis dims subs =
+  LA.fromColumns
+  $ mconcat
+  $ fmap (LA.toColumns . subsetInteractionBasis dims) subsets
+  where
+    uniques = Set.toList . Set.fromList
+    subsets = fmap Subset
+              $ uniques
+              $ mconcat
+              $ fmap (powerset . subset) $ Set.toList subs
+
+
+-- k is a phantom here to at least assure we are using a category map with the correct types
+-- But this is upsettingly Stringy
+data CatMap k where
+  CatMap :: [Char] -> (Char -> Maybe Int) -> (Char -> Maybe Int) -> CatMap k
+
+mkCatMap :: forall k . [(Char, Int)] -> CatMap k
+mkCatMap catNamesAndSizes = CatMap allCats lookupPos lookupSize where
+  allCats = fst <$> catNamesAndSizes
+  lookupPos c = M.lookup c $ M.fromList $ zip (fst <$> catNamesAndSizes) [1..]
+  lookupSize c = M.lookup c $ M.fromList catNamesAndSizes
+
+catSubset :: CatMap k -> [Char] -> Maybe [Int]
+catSubset (CatMap _ f _) = traverse f
+
+
+powerset :: [a] -> [[a]]
+powerset l = [] : go l
+  where
+    go [] = []
+    go (x : xs) = let ps = go xs in [x] : (fmap (x :) ps) <> ps
+
+{-
+interactionBasisCM :: CatMap k -> Set [String] -> Maybe (LA.Matrix LA.R, LA.Matrix LA.R)
+interactionBasisCM (CatMap cns lp ls) knownSubsets = do
+  let dimensions = traverse ls cns
+-}
