@@ -25,6 +25,7 @@ where
 
 import qualified BlueRipple.Model.Demographic.EnrichData as DED
 import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
+import qualified BlueRipple.Model.Demographic.NullSpaceBasis as DNS
 
 import qualified BlueRipple.Data.Keyed as BRK
 
@@ -507,19 +508,22 @@ avgNullSpaceProjections popWeightF m = VS.map (/ totalWeight) . VS.fromList . fm
     weight (n, v) = VS.map (* popWeightF n) v
 
 diffCovarianceFldMS :: forall outerK k row w .
-                       (Ord outerK)
+                       (Ord outerK, BRK.FiniteSet k)
                     => Lens' w Double
                     -> (row -> outerK)
                     -> (row -> k)
                     -> (row -> w)
                     -> DMS.MarginalStructure w k
-                    -> FL.Fold row (LA.Vector Double, LA.Herm Double)
-diffCovarianceFldMS wl outerKey catKey dat = \cases
-  (DMS.MarginalStructure subsets ptFld) -> diffCovarianceFld wl outerKey catKey dat
-                                           (fmap DMS.subsetToStencil subsets)
-                                           (fmap snd . FL.fold ptFld)
+                    -> Maybe (DNS.CatsAndKnowns k)
+                    -> Maybe (FL.Fold row (LA.Vector Double, LA.Herm Double))
+diffCovarianceFldMS wl outerKey catKey dat ms cmM = do
+  nVs <- nvpProj <$> nullVecsMS ms cmM
+  pure $ case ms of
+           (DMS.MarginalStructure subsets ptFld) -> diffCovarianceFld wl outerKey catKey dat
+                                                    nVs
+                                                    (fmap snd . FL.fold ptFld)
 
-
+{-
 diffCovarianceFldSubsets :: forall outerK k row w .
                             (Ord outerK)
                          => Lens' w Double
@@ -533,6 +537,7 @@ diffCovarianceFldSubsets wl outerKey catKey dat subsets = \cases
   (DMS.MarginalStructure _ ptFld) -> diffCovarianceFld wl outerKey catKey dat
                                            (fmap DMS.subsetToStencil subsets)
                                            (fmap snd . FL.fold ptFld)
+-}
 
 diffCovarianceFld :: forall outerK k row w .
                      (Ord outerK, Ord k, BRK.FiniteSet k, Monoid w)
@@ -540,14 +545,14 @@ diffCovarianceFld :: forall outerK k row w .
                   -> (row -> outerK)
                   -> (row -> k)
                   -> (row -> w)
-                  -> [DED.Stencil Int]
+                  -> LA.Matrix LA.R
                   -> ([(k, w)] -> [w])
                   -> FL.Fold row (LA.Vector LA.R, LA.Herm LA.R)
-diffCovarianceFld wl outerKey catKey dat sts prodTableF = LA.meanCov . LA.fromRows <$> vecsFld
+diffCovarianceFld wl outerKey catKey dat nullVecs' prodTableF = LA.meanCov . LA.fromRows <$> vecsFld
   where
     allKs :: Set k = BRK.elements
-    n = S.size allKs
-    (_, nullVecs') = nullSpaceDecomposition n sts
+--    n = S.size allKs
+--    (_, nullVecs') = nullSpaceDecomposition n sts
     wgtVec = VS.fromList . fmap (view wl)
     pcF :: [w] -> VS.Vector Double
     pcF = wgtVec . prodTableF . zip (S.toList allKs)
@@ -587,7 +592,7 @@ nullSpaceDecompositionMS = \cases
   (DMS.MarginalStructure subsets _) -> nullSpaceDecompositionSubsets @k subsets
 
 nullSpaceDecompositionSubsets :: forall k . (BRK.FiniteSet k, Ord k) => [Set k] -> (LA.Matrix LA.R, LA.Matrix LA.R)
-nullSpaceDecompositionSubsets subsets = nullSpaceDecomposition (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
+nullSpaceDecompositionSubsets subsets = DNS.nullSpacePartitionSVD (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
 
 
 --nullSpaceVectors :: Int -> [DED.Stencil Int] -> LA.Matrix LA.R
@@ -596,7 +601,7 @@ nullSpaceDecompositionSubsets subsets = nullSpaceDecomposition (S.size $ BRK.ele
 --nullSpaceVectorsMS' :: forall k w . DMS.MarginalStructure w k -> (LA.Matrix LA.R, LA.Matrix LA.R)
 --nullSpaceVectorsMS' = \cases
 --  (DMS.MarginalStructure subsets _) -> nullSpaceVectors' (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
-
+{-
 nullSpaceDecomposition :: Int -> [DED.Stencil Int] -> (LA.Matrix LA.R, LA.Matrix LA.R)
 nullSpaceDecomposition n sts =
   let cM = DED.mMatrix n sts
@@ -612,19 +617,20 @@ nullSpaceDecomposition n sts =
 --      nullVecs = LA.nullspaceSVD (Left 1) (LA.tr cM) (s, v) --
 --      nonRedundantConstraints = LA.orthSVD (Left 1) cM (u, s) --LA.takeColumns k u
   in (nonRedundantConstraints, nVs)
+-}
 
+uncorrelatedNullVecsMS :: forall k w . DMS.MarginalStructure w k -> Maybe (DNS.CatsAndKnowns k) -> LA.Herm LA.R -> Maybe (NullVectorProjections k)
+uncorrelatedNullVecsMS ms cmM cov = do
+  plainNVPs <- nullVecsMS ms cmM
+  pure $ case ms of
+    (DMS.MarginalStructure _ _) -> uncorrelatedNullVecs (nvpConstraints plainNVPs) (nvpProj plainNVPs) cov
 
-uncorrelatedNullVecsMS :: forall k w . DMS.MarginalStructure w k -> LA.Herm LA.R -> NullVectorProjections k
-uncorrelatedNullVecsMS ms cov = case ms of
-  (DMS.MarginalStructure _ _) -> uncorrelatedNullVecs cM nVs cov
-    where
-      (cM, nVs) = nullSpaceDecompositionMS ms
-
+{-
 uncorrelatedNullVecsSubsets :: forall k . (Ord k, BRK.FiniteSet k) => [Set k] -> LA.Herm LA.R -> NullVectorProjections k
 uncorrelatedNullVecsSubsets subsets cov = uncorrelatedNullVecs cM nVs cov
   where
     (cM, nVs) = nullSpaceDecompositionSubsets subsets
-
+-}
 
 uncorrelatedNullVecs :: (Ord k, BRK.FiniteSet k)
                      => LA.Matrix LA.R
@@ -635,23 +641,27 @@ uncorrelatedNullVecs cMatrix nVs cov = PCAWNullVectorProjections cMatrix nVs eig
   where
     (eigVals, eigVecs) = LA.eigSH cov
 
+{-
 nullVecs :: (Ord k, BRK.FiniteSet k)
          => LA.Matrix LA.R
          -> LA.Matrix LA.R
          -> NullVectorProjections k
 nullVecs = NullVectorProjections
 
+
 nullVecsSubsets :: forall k . (Ord k, BRK.FiniteSet k) => [Set k]  -> NullVectorProjections k
 nullVecsSubsets subsets = NullVectorProjections cM nVs
   where
     (cM, nVs) = nullSpaceDecompositionSubsets subsets
+-}
 
-
-nullVecsMS :: forall k w . DMS.MarginalStructure w k  -> NullVectorProjections k
-nullVecsMS ms = case ms of
-   (DMS.MarginalStructure _ _) -> NullVectorProjections cM nVs
+nullVecsMS :: forall k w . DMS.MarginalStructure w k  -> Maybe (DNS.CatsAndKnowns k) -> Maybe (NullVectorProjections k)
+nullVecsMS ms cmM = case ms of
+   (DMS.MarginalStructure _ _) -> (\(c, n) -> NullVectorProjections c n) <$> cnM
      where
-       (cM, nVs) = nullSpaceDecompositionMS ms
+       cnM = case cmM of
+         Nothing ->  Just $ nullSpaceDecompositionMS ms
+         Just catsAndMarginals ->  DNS.nullSpacePartitionCM catsAndMarginals
 
 ----
 optimalVector :: DED.EnrichDataEffects r

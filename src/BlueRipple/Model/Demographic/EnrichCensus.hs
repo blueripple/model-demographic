@@ -31,6 +31,8 @@ import qualified BlueRipple.Model.Demographic.EnrichData as DED
 import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified BlueRipple.Model.Demographic.TableProducts as DTP
 import qualified BlueRipple.Model.Demographic.TPModel3 as DTM3
+import qualified BlueRipple.Model.Demographic.NullSpaceBasis as DNS
+
 
 import qualified BlueRipple.Data.Keyed as Keyed
 
@@ -732,22 +734,23 @@ predictedCensusCASER' onSimplexM predictionCacheDirE predictSRCA_C predictACSRE_
   predictCASERFrom_CASR_ASE @LDOuterKeyR onSimplexM  (BRCC.mapDirE (<> "_CASR_ASE") predictionCacheDirE) geoTextMF predictACSRE_C casrPrediction_C ase_C
 
 
-projCovFld :: forall rs ks . (ks F.⊆ rs, F.ElemOf rs GT.PUMA, F.ElemOf rs GT.StateAbbreviation, F.ElemOf rs DT.PopCount, F.ElemOf rs DT.PWPopPerSqMile)
-           => Maybe [Set (F.Record ks)] -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks) -> FL.Fold (F.Record rs) (LA.Vector Double, LA.Herm Double)
-projCovFld subsetsM ms = case subsetsM of
-  Nothing -> DTP.diffCovarianceFldMS
-             DMS.cwdWgtLens
-             (F.rcast @[GT.StateAbbreviation, GT.PUMA])
-             (F.rcast @ks)
-             DTM3.cwdF
-             ms
-  Just subsets -> DTP.diffCovarianceFldSubsets
-                  DMS.cwdWgtLens
-                  (F.rcast @[GT.StateAbbreviation, GT.PUMA])
-                  (F.rcast @ks)
-                  DTM3.cwdF
-                  subsets
-                  ms
+projCovFld :: forall rs ks . (ks F.⊆ rs
+                             , F.ElemOf rs GT.PUMA
+                             , F.ElemOf rs GT.StateAbbreviation
+                             , F.ElemOf rs DT.PopCount
+                             , F.ElemOf rs DT.PWPopPerSqMile
+                             , Keyed.FiniteSet (F.Record ks)
+                             )
+           => DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
+           -> Maybe (DNS.CatsAndKnowns (F.Record ks))
+           -> Maybe (FL.Fold (F.Record rs) (LA.Vector Double, LA.Herm Double))
+projCovFld ms camM = DTP.diffCovarianceFldMS
+                     DMS.cwdWgtLens
+                     (F.rcast @[GT.StateAbbreviation, GT.PUMA])
+                     (F.rcast @ks)
+                     DTM3.cwdF
+                     ms
+                     camM
 
 --data ErrorProjectionSource w k where
 --  ViaSubsets :: [Set k] -> ErrorProjectionSource w k
@@ -761,14 +764,13 @@ cachedNVProjections :: forall rs ks r .
                     => Either Text Text
                     -> Text
                     -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
-                    -> Maybe (Text, [Set (F.Record ks)])
+                    -> Maybe (Text, DNS.CatsAndKnowns (F.Record ks))
                     -> K.ActionWithCacheTime r (F.FrameRec rs)
                     -> K.Sem r (K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks)))
 cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
-  let fld = projCovFld (snd <$> subsetsM) ms
+  fld <- K.knitMaybe "cachedNVProjections: problem building covariance fold. Bad marginal subsets?" $ (projCovFld ms $ snd <$> subsetsM)
   cacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_NVPs.bin")
-  K.logLE K.Info $ "Retrieving or rebuilding marginal-structure null-space projections for key=" <> cacheKey
-  msNvp_C <- BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
+  BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
     K.logLE K.Info $ "Rebuilding null-space projections for key=" <> cacheKey
     K.logLE K.Info $ "Computing covariance matrix of projected differences."
     let (projMeans, projCovariances) = FL.fold fld dataRows
@@ -777,12 +779,9 @@ cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
       $ "mean=" <> toText (DED.prettyVector projMeans)
       <> "\ncov=" <> toText (LA.disps 3 $ LA.unSym projCovariances)
       <> "\ncovariance eigenValues: " <> DED.prettyVector eigVals
-    pure $ DTP.uncorrelatedNullVecsMS ms projCovariances
-  case subsetsM of
-    Nothing -> pure msNvp_C
-    Just (subsetCacheId, subsets) -> do
-      subsetNVPCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_" <> subsetCacheId <> "_NVPs.bin")
-      BRCC.retrieveOrMakeD subsetNVPCacheKey msNvp_C $ subsetsNVP subsets
+
+    K.knitMaybe "cachedNVPProjections: problem making uncorrelation nullVecs. Bad marginal subsets?"
+      $ DTP.uncorrelatedNullVecsMS ms (snd <$> subsetsM) projCovariances
 
 {-
 --      subsetProjectionsCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_subsetNVPs.bin")
@@ -881,7 +880,7 @@ predictorModel3 :: forall (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) ks q
                 -> Either Text Text
                 -> DTM3.MeanOrModel
                 -> Maybe (LA.Matrix Double)
-                -> Maybe (Text, [Set (F.Record ks)])
+                -> Maybe (Text, DNS.CatsAndKnowns (F.Record ks))
                 -> Maybe Double
                 -> K.ActionWithCacheTime r (F.FrameRec (PUMARowR ks))
                 -> K.Sem r (K.ActionWithCacheTime r (DTM3.Predictor (F.Record ks) Text)
