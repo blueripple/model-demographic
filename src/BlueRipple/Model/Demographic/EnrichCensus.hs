@@ -763,25 +763,32 @@ cachedNVProjections :: forall rs ks r .
                        , ks F.⊆ rs, F.ElemOf rs GT.PUMA, F.ElemOf rs GT.StateAbbreviation, F.ElemOf rs DT.PopCount, F.ElemOf rs DT.PWPopPerSqMile)
                     => Either Text Text
                     -> Text
+                    -> Bool
                     -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
                     -> Maybe (Text, DNS.CatsAndKnowns (F.Record ks))
                     -> K.ActionWithCacheTime r (F.FrameRec rs)
                     -> K.Sem r (K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks)))
-cachedNVProjections cacheDirE modelId ms subsetsM cachedDataRows = do
-  fld <- K.knitMaybe "cachedNVProjections: problem building covariance fold. Bad marginal subsets?" $ (projCovFld ms $ snd <$> subsetsM)
+cachedNVProjections cacheDirE modelId pcaWhiten ms subsetsM cachedDataRows = do
   cacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_NVPs.bin")
   BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
     K.logLE K.Info $ "Rebuilding null-space projections for key=" <> cacheKey
     K.logLE K.Info $ "Computing covariance matrix of projected differences."
-    let (projMeans, projCovariances) = FL.fold fld dataRows
-        (eigVals, _) = LA.eigSH projCovariances
-    K.logLE K.Diagnostic
-      $ "mean=" <> toText (DED.prettyVector projMeans)
-      <> "\ncov=" <> toText (LA.disps 3 $ LA.unSym projCovariances)
-      <> "\ncovariance eigenValues: " <> DED.prettyVector eigVals
+    case pcaWhiten of
+      True -> do
+        fld <- K.knitMaybe "cachedNVProjections: problem building covariance fold. Bad marginal subsets?" $ (projCovFld ms $ snd <$> subsetsM)
+        let (projMeans, projCovariances) = FL.fold fld dataRows
+            (eigVals, _) = LA.eigSH projCovariances
+        K.logLE K.Diagnostic
+          $ "mean=" <> toText (DED.prettyVector projMeans)
+          <> "\ncov=" <> toText (LA.disps 3 $ LA.unSym projCovariances)
+          <> "\ncovariance eigenValues: " <> DED.prettyVector eigVals
 
-    K.knitMaybe "cachedNVPProjections: problem making uncorrelation nullVecs. Bad marginal subsets?"
-      $ DTP.uncorrelatedNullVecsMS ms (snd <$> subsetsM) projCovariances
+        K.knitMaybe "cachedNVPProjections: problem making uncorrelation nullVecs. Bad marginal subsets?"
+          $ DTP.uncorrelatedNullVecsMS ms (snd <$> subsetsM) projCovariances
+      False -> do
+        K.knitMaybe "cachedNVPProjections: problem making uncorrelation nullVecs. Bad marginal subsets?"
+          $ DTP.nullVecsMS  ms (snd <$> subsetsM)
+
 
 {-
 --      subsetProjectionsCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_subsetNVPs.bin")
@@ -879,6 +886,7 @@ predictorModel3 :: forall (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) ks q
                 => Either Text Text
                 -> Either Text Text
                 -> DTM3.MeanOrModel
+                -> Bool
                 -> Maybe (LA.Matrix Double)
                 -> Maybe (Text, DNS.CatsAndKnowns (F.Record ks))
                 -> Maybe Double
@@ -886,14 +894,14 @@ predictorModel3 :: forall (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) ks q
                 -> K.Sem r (K.ActionWithCacheTime r (DTM3.Predictor (F.Record ks) Text)
                            , DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
                            )
-predictorModel3 modelIdE predictorCacheDirE tp3MOM amM seM fracVarM acs_C = do
+predictorModel3 modelIdE predictorCacheDirE tp3MOM pcaWhiten amM seM fracVarM acs_C = do
   let (modelId, modelCacheDirE) = case modelIdE of
         Left mId -> (mId, Left DTM3.model3A5CacheDir)
         Right mId -> (mId, Right DTM3.model3A5CacheDir)
 --  nvpsCacheKey <- BRCC.cacheFromDirE modelCacheDirE (modelId <> "_NVPs.bin")
   predictorCacheKey <- BRCC.cacheFromDirE predictorCacheDirE "Predictor.bin"
   let ms = marginalStructure @ks @as @bs @DMS.CellWithDensity @qs DMS.cwdWgtLens DMS.innerProductCWD'
-  nullVectorProjections_C <- cachedNVProjections modelCacheDirE modelId ms seM acs_C
+  nullVectorProjections_C <- cachedNVProjections modelCacheDirE modelId pcaWhiten ms seM acs_C
   momF <- case fracVarM of
     Nothing -> pure $ const tp3MOM
     Just thr -> do
