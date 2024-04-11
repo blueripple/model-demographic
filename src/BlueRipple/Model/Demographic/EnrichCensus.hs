@@ -83,6 +83,7 @@ type SER = [DT.SexC, DT.Education4C, DT.Race5C]
 type CSR = [DT.CitizenC, DT.SexC, DT.Race5C]
 type SRC = [DT.SexC, DT.Race5C, DT.CitizenC]
 type AS = [DT.Age5C, DT.SexC]
+type AE = [DT.Age5C, DT.Education4C]
 type ASR = [DT.Age5C, DT.SexC, DT.Race5C]
 type ASRE = [DT.Age5C, DT.SexC, DT.Race5C, DT.Education4C]
 type A6SRE = [DT.Age6C, DT.SexC, DT.Race5C, DT.Education4C]
@@ -107,6 +108,8 @@ type KeysWD ks = ks V.++ [DT.PopCount, DT.PWPopPerSqMile]
 class CatsText (a :: [(Symbol, Type)]) where
   catsText :: Text
 
+instance CatsText AE where
+  catsText = "AE"
 instance CatsText SR where
   catsText = "SR"
 instance CatsText CSR where
@@ -770,11 +773,11 @@ cachedNVProjections :: forall rs ks r .
                     -> K.Sem r (K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks)))
 cachedNVProjections cacheDirE modelId pcaWhiten ms subsetsM cachedDataRows = do
   cacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_NVPs.bin")
-  BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
+  nvps_C <- BRCC.retrieveOrMakeD cacheKey cachedDataRows $ \dataRows -> do
     K.logLE K.Info $ "Rebuilding null-space projections for key=" <> cacheKey
-    K.logLE K.Info $ "Computing covariance matrix of projected differences."
     case pcaWhiten of
       True -> do
+        K.logLE K.Info $ "Computing covariance matrix of projected differences."
         fld <- K.knitMaybe "cachedNVProjections: problem building covariance fold. Bad marginal subsets?" $ (projCovFld ms $ snd <$> subsetsM)
         let (projMeans, projCovariances) = FL.fold fld dataRows
             (eigVals, _) = LA.eigSH projCovariances
@@ -788,7 +791,8 @@ cachedNVProjections cacheDirE modelId pcaWhiten ms subsetsM cachedDataRows = do
       False -> do
         K.knitMaybe "cachedNVPProjections: problem making uncorrelation nullVecs. Bad marginal subsets?"
           $ DTP.nullVecsMS  ms (snd <$> subsetsM)
-
+    -- check things heres
+  pure nvps_C
 
 {-
 --      subsetProjectionsCacheKey <- BRCC.cacheFromDirE cacheDirE (modelId <> "_subsetNVPs.bin")

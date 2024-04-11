@@ -90,14 +90,13 @@ contrastBasis' n = LA.fromRows (iRows <> [rowOnes])
     rowOnes = LA.fromList $ List.replicate (n-1) (-1)
     iRows = LA.toRows $ LA.ident (n-1)
 
-
 -- matrix of rows of 1s or appropriate slices of the contrast basis
 aVecs :: Dimensions -> Subset -> Indices -> [LA.Vector LA.R]
 aVecs dims sub subsetIs =
   let sWi = M.fromList $ zip (subset sub) (indices subsetIs)
       row (dimPos, dimSize) = case M.lookup dimPos sWi of
         Nothing -> LA.fromList $ List.replicate dimSize 1
-        Just sElt -> List.head $ LA.toRows $ LA.dropRows (sElt - 1) (LA.tr $ contrastBasis' dimSize)
+        Just sElt -> List.head $ LA.toRows $ LA.dropRows (sElt - 1) (LA.tr $ contrastBasis dimSize)
   in fmap row $ zip [1..] (dimensions dims)
 
 infixl 9 #
@@ -144,28 +143,6 @@ subsetInteractionBasis dims sub = LA.fromColumns $ fmap oneVec subIs
     oneVec = interactionV dims sub
     subIs = subsetIndices dims sub
 
-{-
-powerSetInteractionBasis :: Dimensions -> Subset -> LA.Matrix LA.R
-powerSetInteractionBasis dims subs =
-  LA.fromColumns
-  $ mconcat
-  $ fmap (LA.toColumns . subsetInteractionBasis dims) subsets
-  where
-    subsets = fmap Subset $ powerset $ subset subs
-
-interactionBasis :: Dimensions -> Set.Set Subset -> LA.Matrix LA.R
-interactionBasis dims subs =
-  LA.fromColumns
-  $ mconcat
-  $ fmap (LA.toColumns . subsetInteractionBasis dims) subsets
-  where
-    uniques = Set.toList . Set.fromList
-    subsets = fmap Subset
-              $ uniques
-              $ mconcat
-              $ fmap (powerset . subset) $ Set.toList subs
-
--}
 -- k is a phantom here to at least assure we are using a category map with the correct types
 -- But this is upsettingly Stringy
 data CatMap k where
@@ -203,6 +180,10 @@ powerset l = [] : go l
     go [] = []
     go (x : xs) = let ps = go xs in [x] : (fmap (x :) ps) <> ps
 
+
+normalizeCols :: LA.Matrix LA.R -> LA.Matrix LA.R
+normalizeCols = LA.fromColumns . fmap LA.normalize . LA.toColumns
+
 subsetFromKnownChars :: CatMap k -> Known [Char] -> Maybe (Known Subset)
 subsetFromKnownChars (CatMap _ lp _) = traverse (fmap Subset . traverse lp)
 
@@ -217,6 +198,7 @@ interactionBasisCM' cm knownSubsetsC = do
 interactionBasisCM :: CatsAndKnowns k -> Maybe (LA.Matrix LA.R)
 interactionBasisCM cam = interactionBasisCM' (camCatMap cam) (camKnowns cam)
 
+
 nullSpacePartitionCM' :: Traversable f => CatMap k -> f (Known [Char]) -> Maybe (LA.Matrix LA.R, LA.Matrix LA.R)
 nullSpacePartitionCM' cm knownSubsetsC = do
   dims <- catMapDimensions cm
@@ -226,7 +208,7 @@ nullSpacePartitionCM' cm knownSubsetsC = do
 --  unionOfKnownSubsets <- Set.fromList <$> (traverse subsetFromChars $ Set.toList knownSubsets)
   constraints <- interactionBasisCM' cm knownSubsetsC
   let nullSpace = LA.fromColumns $ mconcat $ fmap (LA.toColumns . subsetInteractionBasis dims) $ Set.toList $ Set.difference allSubsets knownSubsets
-  pure (LA.tr constraints, LA.tr nullSpace)
+  pure (LA.tr $ normalizeCols constraints, LA.tr $ normalizeCols nullSpace)
 
 nullSpacePartitionCM :: CatsAndKnowns k -> Maybe (LA.Matrix LA.R, LA.Matrix LA.R)
 nullSpacePartitionCM cam = nullSpacePartitionCM' (camCatMap cam) (camKnowns cam)
