@@ -120,42 +120,43 @@ frameTableProduct base splitUsing = DED.enrichFrameFromModel @count (fmap (DED.m
 -- rotates back to the SVD computed null space and then injects into the space of the full table.
 
 data NullVectorProjections k where
-  NullVectorProjections :: (Ord k, BRK.FiniteSet k) =>  LA.Matrix Double -> LA.Matrix Double -> NullVectorProjections k
-  PCAWNullVectorProjections :: (Ord k, BRK.FiniteSet k) =>  LA.Matrix Double -> LA.Matrix Double -> LA.Vector Double -> LA.Matrix Double -> NullVectorProjections k
---  AvgdNullVectorProjections :: (Ord k, BRK.FiniteSet k) =>  LA.Matrix Double -> LA.Matrix Double -> LA.Matrix Double -> LA.Matrix Double -> NullVectorProjections k
+  NullVectorProjections :: (Ord k, BRK.FiniteSet k) =>  DNS.NullSpacePartition -> NullVectorProjections k
+  PCAWNullVectorProjections :: (Ord k, BRK.FiniteSet k) =>  DNS.NullSpacePartition -> LA.Vector Double -> LA.Matrix Double -> NullVectorProjections k
+
+nullSpacePartition :: NullVectorProjections k -> DNS.NullSpacePartition
+nullSpacePartition (NullVectorProjections x) = x
+nullSpacePartition (PCAWNullVectorProjections x _ _) = x
 
 nvpConstraints :: NullVectorProjections k -> LA.Matrix Double
-nvpConstraints (NullVectorProjections c _) = c
-nvpConstraints (PCAWNullVectorProjections c _ _ _) = c
+nvpConstraints  = DNS.knownM . nullSpacePartition
 
 nvpProj :: NullVectorProjections k -> LA.Matrix Double
-nvpProj (NullVectorProjections _ p) = p
-nvpProj (PCAWNullVectorProjections _ p _ _) = p
+nvpProj = DNS.unknownM . nullSpacePartition
 
 nvpRot :: NullVectorProjections k -> LA.Matrix Double
-nvpRot (NullVectorProjections _ p) = LA.ident $ LA.rows p
-nvpRot (PCAWNullVectorProjections _ _ _ r) = r
+nvpRot (NullVectorProjections nsp) = LA.ident $ LA.rows $ DNS.unknownM nsp
+nvpRot (PCAWNullVectorProjections _ _ r) = r
 
-nvpToEithersOfVectors :: NullVectorProjections k
-                      -> Either
-                      ([LA.Vector Double], [LA.Vector Double])
-                      ([LA.Vector Double], [LA.Vector Double], LA.Vector Double, [LA.Vector Double])
-nvpToEithersOfVectors (NullVectorProjections c p) = Left (LA.toRows c, LA.toRows p)
-nvpToEithersOfVectors (PCAWNullVectorProjections c p s r) = Right (LA.toRows c, LA.toRows p, s, LA.toRows r)
+nvpToEither :: NullVectorProjections k
+             -> Either
+             DNS.NullSpacePartition
+             (DNS.NullSpacePartition, LA.Vector Double, [LA.Vector Double])
+nvpToEither (NullVectorProjections nsp) = Left nsp
+nvpToEither (PCAWNullVectorProjections nsp s r) = Right (nsp, s, LA.toRows r)
 
-nvpFromEithersOfVectors :: (Ord k, BRK.FiniteSet k)
-                        => Either
-                            ([LA.Vector Double], [LA.Vector Double])
-                            ([LA.Vector Double], [LA.Vector Double], LA.Vector Double, [LA.Vector Double])
-                        -> NullVectorProjections k
-nvpFromEithersOfVectors e = case e of
-  Left (cr, pr) -> NullVectorProjections (LA.fromRows cr) (LA.fromRows pr)
-  Right (cr, pr, s, rr) -> PCAWNullVectorProjections (LA.fromRows cr) (LA.fromRows pr) s (LA.fromRows rr)
+nvpFromEither :: (Ord k, BRK.FiniteSet k)
+              => Either
+                 DNS.NullSpacePartition
+                 (DNS.NullSpacePartition, LA.Vector Double, [LA.Vector Double])
+              -> NullVectorProjections k
+nvpFromEither e = case e of
+  Left nsp -> NullVectorProjections nsp
+  Right (nsp, s, rr) -> PCAWNullVectorProjections nsp s (LA.fromRows rr)
 
 instance (Ord k, BRK.FiniteSet k) => Flat.Flat (NullVectorProjections k) where
-  size  = Flat.size . nvpToEithersOfVectors
-  encode = Flat.encode . nvpToEithersOfVectors
-  decode = nvpFromEithersOfVectors <$> Flat.decode
+  size  = Flat.size . nvpToEither
+  encode = Flat.encode . nvpToEither
+  decode = nvpFromEither <$> Flat.decode
 
 
 {-
@@ -187,21 +188,20 @@ nullVectorProjections (RawDiff x) = x
 nullVectorProjections (AvgdDiff _ x) = x
 
 numProjections :: NullVectorProjections k -> Int
-numProjections (NullVectorProjections _ p) = fst $ LA.size p
-numProjections (PCAWNullVectorProjections _ p _ _) = fst $ LA.size p
+numProjections = fst . LA.size .  DNS.unknownM . nullSpacePartition
 
 fullToProjM :: NullVectorProjections k -> LA.Matrix LA.R
-fullToProjM (NullVectorProjections _ pM) = pM
-fullToProjM (PCAWNullVectorProjections _ pM _ rM) = LA.tr rM LA.<> pM
+fullToProjM (NullVectorProjections nsp) = DNS.unknownM nsp
+fullToProjM (PCAWNullVectorProjections nsp _ rM) = LA.tr rM LA.<> DNS.unknownM nsp
 
 projToFullM :: NullVectorProjections k -> LA.Matrix LA.R
-projToFullM (NullVectorProjections _ pM) = LA.tr pM
-projToFullM (PCAWNullVectorProjections _ pM _ rM) = LA.tr pM <> rM
+projToFullM (NullVectorProjections nsp) = DNS.ipUnknownM nsp
+projToFullM (PCAWNullVectorProjections nsp _ rM) = DNS.ipUnknownM nsp <> rM
 
 -- NB: fullToProjM and projToFullM are transposes of each other
 -- So left-multiplcation by fullToProjM is the same as right multiplication by projToFullM
 projToFull :: NullVectorProjections k -> LA.Vector LA.R -> LA.Vector LA.R
-projToFull nvps v = v LA.<# fullToProjM nvps
+projToFull nvps v = projToFullM nvps LA.#> v
 
 fullToProj :: NullVectorProjections k -> LA.Vector LA.R -> LA.Vector LA.R
 fullToProj nvps v = fullToProjM nvps LA.#> v
@@ -234,11 +234,13 @@ permutationMatrix ik = case ik of
 mapNullVectorProjections :: DMS.IsomorphicKeys a b -> NullVectorProjections a -> NullVectorProjections b
 mapNullVectorProjections ikab nva = case ikab of
   (DMS.IsomorphicKeys _ _) -> case nva of
-    (NullVectorProjections cM pM) -> let permM = permutationMatrix ikab
-                                     in NullVectorProjections (cM LA.<> LA.tr permM) (pM LA.<> LA.tr permM)
+    (NullVectorProjections nsp) -> let permM = permutationMatrix ikab
+                                       newNSP = DNS.mkNullSpacePartition (DNS.knownM nsp LA.<> LA.tr permM) (DNS.unknownM nsp LA.<> LA.tr permM)
+                                   in NullVectorProjections newNSP
 
-    (PCAWNullVectorProjections cM pM sV rM) -> let permM = permutationMatrix ikab
-                                               in PCAWNullVectorProjections (cM LA.<> LA.tr permM) (pM LA.<> LA.tr permM) sV rM
+    (PCAWNullVectorProjections nsp sV rM) -> let permM = permutationMatrix ikab
+                                                 newNSP = DNS.mkNullSpacePartition (DNS.knownM nsp LA.<> LA.tr permM) (DNS.unknownM nsp LA.<> LA.tr permM)
+                                               in PCAWNullVectorProjections newNSP sV rM
 
 applyNSPWeights :: ProjectionsToDiff k -> LA.Vector LA.R -> LA.Vector LA.R -> LA.Vector LA.R
 applyNSPWeights (RawDiff nvps) projWs pV = pV + projToFull nvps projWs
@@ -523,22 +525,6 @@ diffCovarianceFldMS wl outerKey catKey dat ms cmM = do
                                                     nVs
                                                     (fmap snd . FL.fold ptFld)
 
-{-
-diffCovarianceFldSubsets :: forall outerK k row w .
-                            (Ord outerK)
-                         => Lens' w Double
-                         -> (row -> outerK)
-                         -> (row -> k)
-                         -> (row -> w)
-                         -> [Set k]
-                         -> DMS.MarginalStructure w k
-                         -> FL.Fold row (LA.Vector Double, LA.Herm Double)
-diffCovarianceFldSubsets wl outerKey catKey dat subsets = \cases
-  (DMS.MarginalStructure _ ptFld) -> diffCovarianceFld wl outerKey catKey dat
-                                           (fmap DMS.subsetToStencil subsets)
-                                           (fmap snd . FL.fold ptFld)
--}
-
 diffCovarianceFld :: forall outerK k row w .
                      (Ord outerK, Ord k, BRK.FiniteSet k, Monoid w)
                   => Lens' w Double
@@ -562,62 +548,13 @@ diffCovarianceFld wl outerKey catKey dat nullVecs' prodTableF = LA.meanCov . LA.
               MR.noUnpack
               (MR.assign outerKey (\row -> (catKey row, dat row)))
               (MR.foldAndLabel innerFld (\_ v -> v))
-{-
-significantNullVecsMS :: forall k w . Double
-                      -> DMS.MarginalStructure w k
-                      -> LA.Herm LA.R
-                      -> NullVectorProjections k
-significantNullVecsMS fracCovToInclude ms cov = case ms of
-  (DMS.MarginalStructure _ _) -> significantNullVecs fracCovToInclude cM (nullSpaceVectorsMS ms) cov
-    where
-      cM = DED.mMatrix (S.size $ BRK.elements @k) (DMS.msStencils ms)
 
-
-significantNullVecs :: (Ord k, BRK.FiniteSet k)
-                    => Double
-                    -> LA.Matrix LA.R
-                    -> LA.Matrix LA.R
-                    -> LA.Herm LA.R
-                    -> NullVectorProjections k
-significantNullVecs fracCovToInclude cMatrix nullVecs cov = PCAWNullVectorProjections cMatrix (LA.tr sigEVecs LA.<> nullVecs) eigVecs
-  where
-    (eigVals, eigVecs) = LA.eigSH cov
-    totCov = VS.sum eigVals
-    nSig = fst $ VS.foldl' (\(m, csf) c -> if csf / totCov < fracCovToInclude then (m + 1, csf + c) else (m, csf)) (0, 0) eigVals
-    sigEVecs = LA.takeColumns nSig eigVecs
--}
-
-nullSpaceDecompositionMS :: forall k w . BRK.FiniteSet k => DMS.MarginalStructure w k -> (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpaceDecompositionMS :: forall k w . BRK.FiniteSet k => DMS.MarginalStructure w k -> DNS.NullSpacePartition
 nullSpaceDecompositionMS = \cases
   (DMS.MarginalStructure subsets _) -> nullSpaceDecompositionSubsets @k subsets
 
-nullSpaceDecompositionSubsets :: forall k . (BRK.FiniteSet k, Ord k) => [Set k] -> (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpaceDecompositionSubsets :: forall k . (BRK.FiniteSet k, Ord k) => [Set k] -> DNS.NullSpacePartition
 nullSpaceDecompositionSubsets subsets = DNS.nullSpacePartitionSVD (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
-
-
---nullSpaceVectors :: Int -> [DED.Stencil Int] -> LA.Matrix LA.R
---nullSpaceVectors n sts = LA.tr $ LA.nullspace $ DED.mMatrix n sts
-
---nullSpaceVectorsMS' :: forall k w . DMS.MarginalStructure w k -> (LA.Matrix LA.R, LA.Matrix LA.R)
---nullSpaceVectorsMS' = \cases
---  (DMS.MarginalStructure subsets _) -> nullSpaceVectors' (S.size $ BRK.elements @k) $ fmap DMS.subsetToStencil subsets
-{-
-nullSpaceDecomposition :: Int -> [DED.Stencil Int] -> (LA.Matrix LA.R, LA.Matrix LA.R)
-nullSpaceDecomposition n sts =
-  let cM = DED.mMatrix n sts
-      (u, s, v') = LA.svd cM
-      k = LA.ranksv (2.2e-16) (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
-      nVs = LA.tr $ LA.dropColumns k v'
-      nonRedundantConstraints = LA.tr $ LA.takeColumns k v'
---      nVs = LA.tr $ LA.nullspace cM
---      nonRedundantConstraints = let (u, _, _) = LA.compactSVD $ LA.tr cM in LA.tr u
---      k = LA.ranksv 1 (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
---      nVs = LA.dropColumns k v
---      nonRedundantConstraints = LA.takeColumns k u
---      nullVecs = LA.nullspaceSVD (Left 1) (LA.tr cM) (s, v) --
---      nonRedundantConstraints = LA.orthSVD (Left 1) cM (u, s) --LA.takeColumns k u
-  in (nonRedundantConstraints, nVs)
--}
 
 uncorrelatedNullVecsMS :: forall k w . DMS.MarginalStructure w k -> Maybe (DNS.CatsAndKnowns k) -> LA.Herm LA.R -> Maybe (NullVectorProjections k)
 uncorrelatedNullVecsMS ms cmM cov = do
@@ -625,39 +562,18 @@ uncorrelatedNullVecsMS ms cmM cov = do
   pure $ case ms of
     (DMS.MarginalStructure _ _) -> uncorrelatedNullVecs (nvpConstraints plainNVPs) (nvpProj plainNVPs) cov
 
-{-
-uncorrelatedNullVecsSubsets :: forall k . (Ord k, BRK.FiniteSet k) => [Set k] -> LA.Herm LA.R -> NullVectorProjections k
-uncorrelatedNullVecsSubsets subsets cov = uncorrelatedNullVecs cM nVs cov
-  where
-    (cM, nVs) = nullSpaceDecompositionSubsets subsets
--}
-
 uncorrelatedNullVecs :: (Ord k, BRK.FiniteSet k)
                      => LA.Matrix LA.R
                      -> LA.Matrix LA.R
                      -> LA.Herm LA.R
                      -> NullVectorProjections k
-uncorrelatedNullVecs cMatrix nVs cov = PCAWNullVectorProjections cMatrix nVs eigVals eigVecs
+uncorrelatedNullVecs cMatrix nVs cov = PCAWNullVectorProjections (DNS.mkNullSpacePartition cMatrix nVs) eigVals eigVecs
   where
     (eigVals, eigVecs) = LA.eigSH cov
 
-{-
-nullVecs :: (Ord k, BRK.FiniteSet k)
-         => LA.Matrix LA.R
-         -> LA.Matrix LA.R
-         -> NullVectorProjections k
-nullVecs = NullVectorProjections
-
-
-nullVecsSubsets :: forall k . (Ord k, BRK.FiniteSet k) => [Set k]  -> NullVectorProjections k
-nullVecsSubsets subsets = NullVectorProjections cM nVs
-  where
-    (cM, nVs) = nullSpaceDecompositionSubsets subsets
--}
-
 nullVecsMS :: forall k w . DMS.MarginalStructure w k  -> Maybe (DNS.CatsAndKnowns k) -> Maybe (NullVectorProjections k)
 nullVecsMS ms cmM = case ms of
-   (DMS.MarginalStructure _ _) -> (\(c, n) -> NullVectorProjections c n) <$> cnM
+   (DMS.MarginalStructure _ _) -> NullVectorProjections  <$> cnM
      where
        cnM = case cmM of
          Nothing ->  Just $ nullSpaceDecompositionMS ms

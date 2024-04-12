@@ -820,8 +820,8 @@ subsetsNVP' nvp subsets  = do
 subsetsNVP :: forall k r . (K.KnitEffects r, Ord k, Keyed.FiniteSet k) => [Set k] -> DTP.NullVectorProjections k -> K.Sem r (DTP.NullVectorProjections k)
 subsetsNVP subsets nvp = do
   let (fullC, fullP) = case nvp of
-        DTP.NullVectorProjections c p -> (c, p)
-        DTP.PCAWNullVectorProjections c p _ _ -> (c, p)
+        DTP.NullVectorProjections nsp -> (DNS.knownM nsp, DNS.unknownM nsp)
+        DTP.PCAWNullVectorProjections nsp _ _ -> (DNS.knownM nsp, DNS.unknownM nsp)
   let n = S.size $ Keyed.elements @k
       logLevel = K.Debug 1
       rawProjections = DED.mMatrix n $ fmap DMS.subsetToStencil subsets
@@ -840,7 +840,7 @@ subsetsNVP subsets nvp = do
       c = LA.ident n - p
   K.logLE logLevel $ "C=" <> toText (LA.dispf 1 c)
   K.logLE logLevel $ "Full C * subset projections=" <> toText (LA.dispf 1 (fullC LA.<> a))
-  pure $ DTP.NullVectorProjections c a'
+  pure $ DTP.NullVectorProjections $ DNS.mkNullSpacePartition c a'
 
 
 
@@ -911,8 +911,8 @@ predictorModel3 modelIdE predictorCacheDirE tp3MOM pcaWhiten amM seM fracVarM ac
     Just thr -> do
       nvps <- K.ignoreCacheTime nullVectorProjections_C
       case nvps of
-        DTP.NullVectorProjections _ _ -> K.knitError "covariance fraction threshold given but null vector projections are not whitened!"
-        DTP.PCAWNullVectorProjections _ _ s _ -> do
+        DTP.NullVectorProjections _  -> K.knitError "covariance fraction threshold given but null vector projections are not whitened!"
+        DTP.PCAWNullVectorProjections _ s _ -> do
           let tCov = VS.foldl (+) 0 s
               indexedFracSoFar = zip [0..] (VS.toList $ VS.map (/ tCov) $ VS.postscanl (+) 0 s)
               cutoffM = fst <$> List.find (( >= thr) . snd) indexedFracSoFar

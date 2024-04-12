@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
@@ -38,6 +39,60 @@ import qualified Numeric.LinearAlgebra.Array as A
 import qualified Numeric.LinearAlgebra.Array.Util as A
 
 import qualified Data.Vector.Storable as VS
+import qualified Flat
+import Flat.Instances.Vector()
+
+-- row based
+-- precomputes the inv(X'X)X' bit
+data NullSpacePartition where
+  NullSpacePartition :: (LA.Matrix LA.R) -> (LA.Matrix LA.R) -> (LA.Matrix LA.R) -> (LA.Matrix LA.R) -> NullSpacePartition
+--  NullSpacePartition :: !(LA.Matrix LA.R) -> !(LA.Matrix LA.R) -> !(LA.Matrix LA.R) -> !(LA.Matrix LA.R) -> NullSpacePartition
+  deriving stock (Show)
+
+nspToTupleOfVectors :: NullSpacePartition -> ([LA.Vector LA.R], [LA.Vector LA.R])
+nspToTupleOfVectors (NullSpacePartition k _ u _) = (LA.toRows k, LA.toRows u)
+
+tupleOfVectorsToNSP :: ([LA.Vector LA.R], [LA.Vector LA.R]) -> NullSpacePartition
+tupleOfVectorsToNSP (kVs, uVs) = mkNullSpacePartition (LA.fromRows kVs) (LA.fromRows uVs)
+
+
+instance Flat.Flat NullSpacePartition where
+  size = Flat.size . nspToTupleOfVectors
+  encode = Flat.encode . nspToTupleOfVectors
+  decode = tupleOfVectorsToNSP <$> Flat.decode
+
+
+mkNullSpacePartition :: LA.Matrix LA.R -> LA.Matrix LA.R -> NullSpacePartition
+mkNullSpacePartition known unknown = NullSpacePartition known (invertProjection known) unknown (invertProjection unknown) where
+  invertProjection m = LA.tr m LA.<> LA.inv (m LA.<> LA.tr m)
+
+knownM :: NullSpacePartition -> LA.Matrix LA.R
+knownM (NullSpacePartition k _ _ _) = k
+
+unknownM :: NullSpacePartition -> LA.Matrix LA.R
+unknownM (NullSpacePartition _ _ u _) = u
+
+ipKnownM :: NullSpacePartition -> LA.Matrix LA.R
+ipKnownM (NullSpacePartition _ ipk _ _) = ipk
+
+ipUnknownM :: NullSpacePartition -> LA.Matrix LA.R
+ipUnknownM (NullSpacePartition _ _ _ ipu) = ipu
+
+applyNSP :: (NullSpacePartition -> LA.Matrix LA.R) -> NullSpacePartition -> LA.Vector LA.R -> LA.Vector LA.R
+applyNSP mf nsp x = (mf nsp) LA.#> x
+
+toKnown :: NullSpacePartition -> LA.Vector LA.R -> LA.Vector LA.R
+toKnown = applyNSP knownM
+
+fromKnown :: NullSpacePartition -> LA.Vector LA.R -> LA.Vector LA.R
+fromKnown = applyNSP ipKnownM
+
+toUnknown :: NullSpacePartition -> LA.Vector LA.R -> LA.Vector LA.R
+toUnknown = applyNSP unknownM
+
+fromUnknown :: NullSpacePartition -> LA.Vector LA.R -> LA.Vector LA.R
+fromUnknown = applyNSP ipUnknownM
+
 
 -- # of dimensions at each index
 newtype Dimensions = Dimensions { dimensions :: [Int] }
@@ -69,14 +124,14 @@ knownCharText (KnownSubset cs) = "+" <> T.pack cs
 -- which are possibly linearly-dependent,
 -- compute an orthonormal basis for them
 -- as well as an orthonormal basis for their orthogonal complement, the null space
-nullSpacePartitionSVD :: Int -> [DED.Stencil Int] -> (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpacePartitionSVD :: Int -> [DED.Stencil Int] -> NullSpacePartition
 nullSpacePartitionSVD n sts =
   let cM = DED.mMatrix n sts
       (_, s, v') = LA.svd cM
       k = LA.ranksv (2.2e-16) (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
       nVs = LA.tr $ LA.dropColumns k v'
       nonRedundantConstraints = LA.tr $ LA.takeColumns k v'
-  in (nonRedundantConstraints, nVs)
+  in mkNullSpacePartition nonRedundantConstraints nVs
 
 contrastBasis :: Int -> LA.Matrix LA.R
 contrastBasis n = LA.fromRows (rowOnes : negIRows)
@@ -199,8 +254,8 @@ interactionBasisCM :: CatsAndKnowns k -> Maybe (LA.Matrix LA.R)
 interactionBasisCM cam = interactionBasisCM' (camCatMap cam) (camKnowns cam)
 
 
-nullSpacePartitionCM' :: Traversable f => CatMap k -> f (Known [Char]) -> Maybe (LA.Matrix LA.R, LA.Matrix LA.R)
-nullSpacePartitionCM' cm knownSubsetsC = do
+nullSpacePartitionCM'' :: Traversable f => CatMap k -> f (Known [Char]) -> Maybe (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpacePartitionCM'' cm knownSubsetsC = do
   dims <- catMapDimensions cm
   knownSubsets <- knownsToSubsets <$> traverse (subsetFromKnownChars cm) knownSubsetsC
   let allSubsets = knownsToSubsets [KnownMarginal $ Subset [1..(length $ dimensions dims)]]
@@ -208,7 +263,10 @@ nullSpacePartitionCM' cm knownSubsetsC = do
 --  unionOfKnownSubsets <- Set.fromList <$> (traverse subsetFromChars $ Set.toList knownSubsets)
   constraints <- interactionBasisCM' cm knownSubsetsC
   let nullSpace = LA.fromColumns $ mconcat $ fmap (LA.toColumns . subsetInteractionBasis dims) $ Set.toList $ Set.difference allSubsets knownSubsets
-  pure (LA.tr $ normalizeCols constraints, LA.tr $ normalizeCols nullSpace)
+  pure $ (LA.tr constraints, LA.tr nullSpace)
 
-nullSpacePartitionCM :: CatsAndKnowns k -> Maybe (LA.Matrix LA.R, LA.Matrix LA.R)
+nullSpacePartitionCM' :: Traversable f => CatMap k -> f (Known [Char]) -> Maybe NullSpacePartition
+nullSpacePartitionCM' cm knownSubsetsC = fmap (uncurry mkNullSpacePartition) $ nullSpacePartitionCM'' cm knownSubsetsC
+
+nullSpacePartitionCM :: CatsAndKnowns k -> Maybe NullSpacePartition
 nullSpacePartitionCM cam = nullSpacePartitionCM' (camCatMap cam) (camKnowns cam)
