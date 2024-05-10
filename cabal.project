@@ -2,16 +2,26 @@ packages: ./
 jobs: 4
 with-compiler: ghc
 
-allow-newer: polysemy-zoo:ghc-prim, streamly-core
-           , freer-simple:template-haskell
+--allow-newer: polysemy-zoo:ghc-prim, streamly-core
+--          , freer-simple:template-haskell
+--           , foldl-statistics:hashable, foldl-statistics:profunctors
+--           , cereal-time:time
+--           , heidi:base
+--           , generic-trie:base
+--           , streamly-bytestring:streamly-core
+--           , nonlinear-optimization:primitive
+--           , nonlinear-optimization:vector
+--           , discrimination:primitive
+
+allow-newer: freer-simple:template-haskell
            , foldl-statistics:hashable, foldl-statistics:profunctors
            , cereal-time:time
-           , heidi:base
-           , generic-trie:base
-           , streamly-bytestring:streamly-core
            , nonlinear-optimization:primitive
            , nonlinear-optimization:vector
-           , discrimination:primitive
+           , generic-trie:base
+           , polysemy-zoo:constraints
+           , polysemy-zoo:bytestring
+           , polysemy-zoo:ghc-prim
 
 flags: +streamly9
 

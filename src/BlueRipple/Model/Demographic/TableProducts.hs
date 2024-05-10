@@ -256,17 +256,28 @@ viaOptimalWeights objF ptd projWs prodV = do
   ows <- DED.mapPE $ optimalWeights objF (nullVectorProjections ptd) projWs pV
   pure $ VS.map (* n) $ applyNSPWeights ptd ows pV
 
+-- alpha - alpha'
 euclideanNS :: ObjectiveF
 euclideanNS _nvps projWs _ v =
   let x = (v - projWs)
   in (VS.sum $ VS.map (^ (2 :: Int)) x, 2 * x)
 
+
+-- B(B^TB)^-1 (alpha - alpha')
 euclideanFull :: ObjectiveF
 euclideanFull nvps projWs _ v =
   let d = v - projWs
       a = projToFullM nvps
       x = a LA.#> d
---      ata = LA.tr (projToFullM nvps) LA.<> (projToFullM nvps)
+  in (VS.sum $ VS.map (^ (2 :: Int)) x, LA.tr a LA.#> (2 * x))
+
+euclideanWeighted :: (Double -> Double) -> ObjectiveF
+euclideanWeighted g nvps projWs pV v =
+  let d = v - projWs
+      f y = if y < 1e-12 then 0 else g y
+      invP = VS.map f pV
+      a = LA.diag invP LA.<> projToFullM nvps
+      x = a LA.#> d
   in (VS.sum $ VS.map (^ (2 :: Int)) x, LA.tr a LA.#> (2 * x))
 
 klDiv :: ObjectiveF
@@ -288,17 +299,19 @@ optimalWeights objectiveF nvps projWs pV = do
 --      prToFull = projToFull nvps
 --      scaleGradM = fullToProjM nvps LA.<> LA.tr (fullToProjM nvps)
       objD = objectiveF nvps projWs pV
-      constraintData =  L.zip (VS.toList pV) (LA.toColumns $ fullToProjM nvps)
-      constraintF :: (Double, LA.Vector LA.R)-> LA.Vector LA.R -> (Double, LA.Vector LA.R)
-      constraintF (p, projToNullC) v = (negate (p + v `LA.dot` projToNullC), negate projToNullC)
-      constraintFs = fmap constraintF constraintData
-      nlConstraintsD = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar cf) 1e-6) constraintFs
---      nlConstraints = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar $ fst . cf) 1e-5) constraintFs
+      constraintData =  L.zip (VS.toList pV) (LA.toRows $ projToFullM nvps)
+      constraintLB :: (Double, LA.Vector LA.R)-> LA.Vector LA.R -> (Double, LA.Vector LA.R)
+      constraintLB (p, projToNullC) v = (negate (p + v `LA.dot` projToNullC), negate projToNullC)
+      constraintLBs = fmap constraintLB constraintData
+      nlConstraintsD = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar cf) 1e-6) $ constraintLBs
+      -- we don't need upper bounds because those are enforced by a constraint.
+      -- sum(pV + projToFullM w) = 1. And since all (pV + projToFull w)_i >= 0
+      -- we know all (pV + projToFull w)_i <= 1
       maxIters = 1000
       absTol = 1e-5
       absTolV = VS.fromList $ L.replicate n absTol
       nlStop = NLOPT.ParameterAbsoluteTolerance absTolV :| [NLOPT.MaximumEvaluations maxIters]
-      nlAlgo = NLOPT.SLSQP objD [] nlConstraintsD []
+      nlAlgo = NLOPT.SLSQP objD [] nlConstraintsD [] --[nlSumToOneD]
 --      nlAlgo = NLOPT.MMA objD nlConstraintsD
       nlProblem =  NLOPT.LocalProblem (fromIntegral n) nlStop nlAlgo
       nlSol = NLOPT.minimizeLocal nlProblem projWs

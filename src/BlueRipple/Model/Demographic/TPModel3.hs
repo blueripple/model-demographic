@@ -98,13 +98,6 @@ nullVecProjectionsModelDataFld wl ms nvps outerKey catKey datF datFold = case ms
                                (MR.assign outerKey id)
                                (MR.foldAndLabel innerFld (\ok (d, v) -> (ok, d, v)))
     where
-{-      allKs :: Set k = BRK.elements
-      wgtVec = VS.fromList . fmap (view wl)
-      pcF :: [w] -> VS.Vector Double
-      pcF =  wgtVec . fmap snd . FL.fold ptFld . zip (S.toList allKs)
-      projections ws = let ws' = DMS.normalize wl ws in DTP.fullToProj nvps (wgtVec ws' - pcF ws')
-      projFld = fmap projections $ DTP.labeledRowsToListFld catKey datF
--}
       projFld = DTP.diffProjectionsFromJointFld ms wl (DTP.fullToProj nvps) catKey datF
       innerFld = (,) <$> datFold <*> projFld
 
@@ -274,7 +267,6 @@ predictedJoint :: forall g k w r . (Show g, Ord g, K.KnitEffects r)
                -> g
                -> VS.Vector Double
                -> [(k, w)]
-
                -> K.Sem r [(k, w)]
 predictedJoint onSimplexM wgtLens p gk covariates keyedProduct = do
   let --n = FL.fold (FL.premap (view wgtLens . snd) FL.sum) keyedProduct
@@ -564,6 +556,32 @@ cwdF r = DMS.CellWithDensity (realToFrac $ r ^. DT.popCount) (r ^. DT.pWPopPerSq
 model3A5CacheDir :: Text
 model3A5CacheDir = "model/demographic/nullVecProjModel3_A5/"
 
+buildProjModelNVPData ::  forall (ks :: [(Symbol, Type)]) rs r .
+                          (K.KnitEffects r
+                          , BRKU.CacheEffects r
+                          , ks F.⊆ rs
+                          , F.ElemOf rs GT.PUMA
+                          , F.ElemOf rs GT.StateAbbreviation
+                          , F.ElemOf rs DT.PopCount
+                          , F.ElemOf rs DT.PWPopPerSqMile
+                          )
+                      => Either Text Text
+                      -> Text
+                      -> K.ActionWithCacheTime r (F.FrameRec rs)
+                      -> K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks))
+                      -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
+                      -> FL.Fold (F.Record rs) (VS.Vector Double)
+                      -> K.Sem r (K.ActionWithCacheTime r [NVProjectionRowData [GT.StateAbbreviation, GT.PUMA]])
+buildProjModelNVPData cacheDirE modelId acs_C nvps_C ms datFld = K.wrapPrefix "TPModel3.buildProjModelNVPData" $ do
+  nvpDataCacheKey <- BRKU.cacheFromDirE cacheDirE (modelId <> "_nvpRowData.bin")
+  let outerKey = F.rcast @[GT.StateAbbreviation, GT.PUMA]
+      catKey = F.rcast @ks
+      nvpDeps = (,) <$> acs_C <*>  nvps_C
+      rawRows acs nvps = NVProjectionRowData <$> FL.fold (nullVecProjectionsModelDataFld DMS.cwdWgtLens ms nvps outerKey catKey cwdF datFld) acs
+      logRebuild = K.logLE K.Info "(Re)building data for models of each projection."
+  BRKU.retrieveOrMakeD nvpDataCacheKey nvpDeps $ \(x, y) ->  logRebuild >> (pure $ rawRows x y)
+
+
 runProjModel :: forall (ks :: [(Symbol, Type)]) rs r .
                 (K.KnitEffects r
                 , BRKU.CacheEffects r
@@ -576,32 +594,18 @@ runProjModel :: forall (ks :: [(Symbol, Type)]) rs r .
              => Either Text Text
              -> RunConfig
              -> MeanOrModel
-             -> K.ActionWithCacheTime r (F.FrameRec rs)
-             -> K.ActionWithCacheTime r (DTP.NullVectorProjections (F.Record ks))
-             -> DMS.MarginalStructure DMS.CellWithDensity (F.Record ks)
-             -> FL.Fold (F.Record rs) (VS.Vector Double)
+             -> K.ActionWithCacheTime r [NVProjectionRowData [GT.StateAbbreviation, GT.PUMA]]
+             -> Set Text
              -> K.Sem r (K.ActionWithCacheTime r (ComponentPredictor Text))
-runProjModel cacheDirE rc mom acs_C nvps_C ms datFld = K.wrapPrefix "TPModel3.runProjModel" $ do
-  nvpDataCacheKey <- BRKU.cacheFromDirE cacheDirE ("nvpRowData" <> momText mom <> ".bin")
-  let outerKey = F.rcast @[GT.StateAbbreviation, GT.PUMA]
-      catKey = F.rcast @ks
-      nvpDeps = (,) <$> acs_C <*>  nvps_C
-  nvpData_C <- fmap (fmap (fmap unNVProjectionRowData))
-               $ BRKU.retrieveOrMakeD nvpDataCacheKey nvpDeps
-               $ \(acsByPUMA, nvps) -> (do
---                                           K.logLE K.Diagnostic $ toText $ LA.dispf 3 (DTP.fullToProjM nvps)
-                                           let rawRows = FL.fold (nullVecProjectionsModelDataFld DMS.cwdWgtLens ms nvps outerKey catKey cwdF datFld) acsByPUMA
-                                           pure $ fmap NVProjectionRowData rawRows
-                               )
+runProjModel cacheDirE rc mom projData_C states {- nvps_C ms datFld -} = K.wrapPrefix "TPModel3.runProjModel" $ do
   let statesFilter = maybe id (\(_, sts) -> filter ((`elem` sts) . view GT.stateAbbreviation . pdKey)) rc.statesM
-      rowData_C = fmap (statesFilter . fmap (toProjDataRow rc.nvIndex)) $ nvpData_C
---  acsByPUMA <- K.ignoreCacheTime acsByPUMA_C
+      rowData_C = fmap (statesFilter . fmap (toProjDataRow rc.nvIndex)) $ fmap (fmap unNVProjectionRowData) projData_C
   case mom of
     Mean -> do
       let meanSDFld :: FL.Fold Double (Double, Double) = (,) <$> FL.mean <*> FL.std
       rowData <- K.ignoreCacheTime rowData_C
       let (mean, sd) = FL.fold (FL.premap pdCoeff meanSDFld) $ rowData
-      K.logLE K.Diagnostic $ "mean=" <> show mean <> "; sd=" <> show sd
+      K.logLE K.Info $ "mean=" <> show mean <> "; sd=" <> show sd
       pure $ pure $ ComponentMean mean
     Model mc -> do
       let modelData_C = ProjData (DM.rowLength mc.designMatrixRow) <$> rowData_C
@@ -612,7 +616,6 @@ runProjModel cacheDirE rc mom acs_C nvps_C ms datFld = K.wrapPrefix "TPModel3.ru
                              (modelText mc)
                              (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
                              dataName
-      states <- FL.fold (FL.premap (view GT.stateAbbreviation) FL.set) <$> K.ignoreCacheTime acs_C
       (dw, code) <-  SMR.dataWranglerAndCode modelData_C (pure ())
                      (stateGroupBuilder (view GT.stateAbbreviation)  (S.toList states))
                      (projModel rc mc)

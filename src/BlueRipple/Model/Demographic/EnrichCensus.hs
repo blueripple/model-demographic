@@ -84,6 +84,7 @@ type CSR = [DT.CitizenC, DT.SexC, DT.Race5C]
 type SRC = [DT.SexC, DT.Race5C, DT.CitizenC]
 type AS = [DT.Age5C, DT.SexC]
 type AE = [DT.Age5C, DT.Education4C]
+type AR = [DT.Age5C, DT.Race5C]
 type ASR = [DT.Age5C, DT.SexC, DT.Race5C]
 type ASRE = [DT.Age5C, DT.SexC, DT.Race5C, DT.Education4C]
 type A6SRE = [DT.Age6C, DT.SexC, DT.Race5C, DT.Education4C]
@@ -110,6 +111,8 @@ class CatsText (a :: [(Symbol, Type)]) where
 
 instance CatsText AE where
   catsText = "AE"
+instance CatsText AR where
+  catsText = "AR"
 instance CatsText SR where
   catsText = "SR"
 instance CatsText CSR where
@@ -900,12 +903,14 @@ predictorModel3 :: forall (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) ks q
                            )
 predictorModel3 modelIdE predictorCacheDirE tp3MOM pcaWhiten amM seM fracVarM acs_C = do
   let (modelId, modelCacheDirE) = case modelIdE of
-        Left mId -> (mId, Left DTM3.model3A5CacheDir)
-        Right mId -> (mId, Right DTM3.model3A5CacheDir)
---  nvpsCacheKey <- BRCC.cacheFromDirE modelCacheDirE (modelId <> "_NVPs.bin")
+        Left mId -> (mId, Left  $ DTM3.model3A5CacheDir <> "/" <> mId)
+        Right mId -> (mId, Right $ DTM3.model3A5CacheDir <> "/" <> mId)
   predictorCacheKey <- BRCC.cacheFromDirE predictorCacheDirE "Predictor.bin"
   let ms = marginalStructure @ks @as @bs @DMS.CellWithDensity @qs DMS.cwdWgtLens DMS.innerProductCWD'
   nullVectorProjections_C <- cachedNVProjections modelCacheDirE modelId pcaWhiten ms seM acs_C
+  K.ignoreCacheTime nullVectorProjections_C >>= \nvps -> (K.logCat "AlphaMismatch" K.Diagnostic
+                                                         $ "Null-space basis (cols): " <> toText (LA.disps 4 (LA.tr $ DTP.fullToProjM nvps)))
+  states <- FL.fold (FL.premap (view GT.stateAbbreviation) FL.set) <$> K.ignoreCacheTime acs_C
   momF <- case fracVarM of
     Nothing -> pure $ const tp3MOM
     Just thr -> do
@@ -928,7 +933,9 @@ predictorModel3 modelIdE predictorCacheDirE tp3MOM pcaWhiten amM seM fracVarM ac
 --      tp3ModelConfig = DTM3.ModelConfig True (DTM3.dmr modelId (tp3NumKeys + 1)) -- +1 for pop density
 --                       DTM3.AlphaHierNonCentered DTM3.ThetaHierarchical DTM3.NormalDist
 --      tp3MOM = if meanAsModel then DTM3.Mean else DTM3.Model tp3ModelConfig
-      modelOne n = DTM3.runProjModel @ks @(PUMARowR ks) modelCacheDirE (tp3RunConfig n) (momF n) acs_C nullVectorProjections_C ms tp3InnerFld
+  projData_C <- DTM3.buildProjModelNVPData modelCacheDirE modelId acs_C nullVectorProjections_C ms tp3InnerFld
+  let modelOne n = DTM3.runProjModel @ks @(PUMARowR ks) modelCacheDirE (tp3RunConfig n) (momF n) projData_C states
+
   predictor_C <- runAllModels predictorCacheKey modelOne acs_C projectionsToDiff_C
   pure (predictor_C, ms)
 
