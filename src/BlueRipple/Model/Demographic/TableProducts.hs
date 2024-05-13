@@ -299,20 +299,35 @@ optimalWeights objectiveF nvps projWs pV = do
 --      prToFull = projToFull nvps
 --      scaleGradM = fullToProjM nvps LA.<> LA.tr (fullToProjM nvps)
       objD = objectiveF nvps projWs pV
+--      obj v = fst $ objD v
       constraintData =  L.zip (VS.toList pV) (LA.toRows $ projToFullM nvps)
       constraintLB :: (Double, LA.Vector LA.R)-> LA.Vector LA.R -> (Double, LA.Vector LA.R)
       constraintLB (p, projToNullC) v = (negate (p + v `LA.dot` projToNullC), negate projToNullC)
       constraintLBs = fmap constraintLB constraintData
       nlConstraintsD = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar cf) 1e-6) $ constraintLBs
+--      nlConstraints = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar $ \v -> fst $ cf v) 1e-6) $ constraintLBs
+{-      constraintV v = negate $ pV + projToFull nvps v
+      constraintG = negate $ projToFullM nvps
+      vecConstraintD v _ = (constraintV v , constraintG)
+      nlvConstraintsD = [NLOPT.InequalityConstraint (NLOPT.Vector (fromIntegral $ VS.length pV) vecConstraintD) 1e-6]
+-}
       -- we don't need upper bounds because those are enforced by a constraint.
       -- sum(pV + projToFullM w) = 1. And since all (pV + projToFull w)_i >= 0
       -- we know all (pV + projToFull w)_i <= 1
       maxIters = 1000
-      absTol = 1e-5
-      absTolV = VS.fromList $ L.replicate n absTol
-      nlStop = NLOPT.ParameterAbsoluteTolerance absTolV :| [NLOPT.MaximumEvaluations maxIters]
+      absTol = 1e-6
+      -- dV_j = sum_k B_{jk} d\alpha_k
+      -- so |dV_j| < \epsilon => d\alpha_k < \epsilon / (sum_j(B_{jk}))
+      sd v =
+        let n = realToFrac $ VS.length v
+            m = VS.sum v / n  in (VS.sum $ VS.map (\x -> (x - m) ** 2) v) / n
+      sdPtF = VS.fromList $ fmap sd $ LA.toColumns $ projToFullM nvps
+      absTolV = VS.map (\x -> absTol / x) sdPtF -- VS.fromList $ L.replicate n absTol
+--  K.logLE K.Info $ "absTolV = " <> DED.prettyVector absTolV
+  let nlStop = NLOPT.ParameterAbsoluteTolerance absTolV :| [NLOPT.MaximumEvaluations maxIters]
       nlAlgo = NLOPT.SLSQP objD [] nlConstraintsD [] --[nlSumToOneD]
 --      nlAlgo = NLOPT.MMA objD nlConstraintsD
+--      nlAlgo = NLOPT.COBYLA obj [] nlConstraints [] Nothing
       nlProblem =  NLOPT.LocalProblem (fromIntegral n) nlStop nlAlgo
       nlSol = NLOPT.minimizeLocal nlProblem projWs
   case nlSol of
