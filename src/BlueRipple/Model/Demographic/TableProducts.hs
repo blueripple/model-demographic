@@ -20,6 +20,7 @@
 module BlueRipple.Model.Demographic.TableProducts
   (
     module BlueRipple.Model.Demographic.TableProducts
+  , module Numeric.ActiveSet
   )
 where
 
@@ -36,6 +37,8 @@ import qualified Control.MapReduce.Simple as MR
 import qualified Frames.MapReduce as FMR
 import qualified Frames.Streamly.InCore as FSI
 
+import qualified Numeric.ActiveSet as AS
+import Numeric.ActiveSet (ActiveSetConfiguration(..), defaultActiveSetConfig, EqualityConstrainedSolver(..))
 import qualified Control.Foldl as FL
 import qualified Data.List as L
 import qualified Data.Map.Strict as M
@@ -48,6 +51,7 @@ import qualified Data.Vinyl.TypeLevel as V
 import qualified Frames as F
 import qualified Frames.Melt as F
 import qualified Frames.Transform as FT
+import qualified Numeric as Numeric
 import qualified Numeric.LinearAlgebra as LA
 import qualified Numeric.NLOPT as NLOPT
 import qualified Data.Vector.Storable as VS
@@ -198,13 +202,17 @@ projToFullM :: NullVectorProjections k -> LA.Matrix LA.R
 projToFullM (NullVectorProjections nsp) = DNS.ipUnknownM nsp
 projToFullM (PCAWNullVectorProjections nsp _ rM) = DNS.ipUnknownM nsp <> rM
 
--- NB: fullToProjM and projToFullM are transposes of each other
--- So left-multiplcation by fullToProjM is the same as right multiplication by projToFullM
 projToFull :: NullVectorProjections k -> LA.Vector LA.R -> LA.Vector LA.R
 projToFull nvps v = projToFullM nvps LA.#> v
 
 fullToProj :: NullVectorProjections k -> LA.Vector LA.R -> LA.Vector LA.R
 fullToProj nvps v = fullToProjM nvps LA.#> v
+
+projToNullM :: NullVectorProjections k -> LA.Matrix LA.R
+projToNullM nvps = projToFullM nvps LA.<> fullToProjM  nvps
+
+projToNonNullM :: NullVectorProjections k -> LA.Matrix LA.R
+projToNonNullM nvps = let f2p = fullToProjM nvps in LA.ident (LA.rows f2p) - (projToFullM nvps LA.<> f2p)
 
 
 {-
@@ -249,11 +257,11 @@ applyNSPWeights (AvgdDiff aM nvps) projWs pV = pV + aM LA.#> projToFull nvps pro
 type ObjectiveF = forall k . NullVectorProjections k -> LA.Vector Double -> LA.Vector Double -> LA.Vector Double -> (Double, LA.Vector Double)
 type OptimalOnSimplexF r =  forall k . ProjectionsToDiff k -> VS.Vector Double -> VS.Vector Double -> K.Sem r (VS.Vector Double)
 
-viaOptimalWeights :: K.KnitEffects r => ObjectiveF -> OptimalOnSimplexF r
-viaOptimalWeights objF ptd projWs prodV = do
+viaOptimalWeights :: K.KnitEffects r => ObjectiveF -> Double -> OptimalOnSimplexF r
+viaOptimalWeights objF pEps ptd projWs prodV = do
   let n = VS.sum prodV
       pV = VS.map (/ n) prodV
-  ows <- DED.mapPE $ optimalWeights objF (nullVectorProjections ptd) projWs pV
+  ows <- DED.mapPE $ optimalWeights objF pEps (nullVectorProjections ptd) projWs pV
   pure $ VS.map (* n) $ applyNSPWeights ptd ows pV
 
 -- alpha - alpha'
@@ -288,11 +296,12 @@ klDiv nvps projWs pV v =
 
 optimalWeights :: DED.EnrichDataEffects r
                => ObjectiveF
+               -> Double
                -> NullVectorProjections k
                -> LA.Vector LA.R
                -> LA.Vector LA.R
                -> K.Sem r (LA.Vector LA.R)
-optimalWeights objectiveF nvps projWs pV = do
+optimalWeights objectiveF pEps nvps projWs pV = do
 --  K.logLE K.Info $ "optimalWeights: pV = " <> DED.prettyVector pV
 --  K.logLE K.Info $ "optimalWeights: Initial pV + nsWs <.> nVs = " <> DED.prettyVector (pV + projToFull nvps projWs)
   let n = VS.length projWs
@@ -315,14 +324,13 @@ optimalWeights objectiveF nvps projWs pV = do
       -- sum(pV + projToFullM w) = 1. And since all (pV + projToFull w)_i >= 0
       -- we know all (pV + projToFull w)_i <= 1
       maxIters = 1000
-      absTol = 1e-6
+      absTol = pEps
       -- dV_j = sum_k B_{jk} d\alpha_k
-      -- so |dV_j| < \epsilon => d\alpha_k < \epsilon / (sum_j(B_{jk}))
-      sd v =
-        let n = realToFrac $ VS.length v
-            m = VS.sum v / n  in (VS.sum $ VS.map (\x -> (x - m) ** 2) v) / n
-      sdPtF = VS.fromList $ fmap sd $ LA.toColumns $ projToFullM nvps
-      absTolV = VS.map (\x -> absTol / x) sdPtF -- VS.fromList $ L.replicate n absTol
+      -- Assume d\alpha_k are iid: Var(dV_j) ~ Var(d\alpha) \sum_k B_{jk}^2
+      -- d\alpha are uniform [-\eps, \eps] so Var(d\alpha) ~ \eps / \sqrt{3}
+      -- \eps_\alpha = \eps/\sqrt 3 * \sum_k B_{jk}^2
+      sdSumPtF = VS.fromList $ fmap (sqrt . VS.sum . VS.map (\x -> x * x)) . LA.toColumns $ projToFullM nvps
+      absTolV = VS.map (\x -> absTol / (sqrt 3 * x)) sdSumPtF -- VS.fromList $ L.replicate n absTol
 --  K.logLE K.Info $ "absTolV = " <> DED.prettyVector absTolV
   let nlStop = NLOPT.ParameterAbsoluteTolerance absTolV :| [NLOPT.MaximumEvaluations maxIters]
       nlAlgo = NLOPT.SLSQP objD [] nlConstraintsD [] --[nlSumToOneD]
@@ -340,6 +348,33 @@ optimalWeights objectiveF nvps projWs pV = do
 --        K.logLE K.Info $ "solution=" <> DED.prettyVector oWs
 --        K.logLE K.Info $ "Solution: pV + oWs <.> nVs = " <> DED.prettyVector (pV + projToFull nvps oWs)
         pure oWs
+
+
+optimalWeightsAS :: DED.EnrichDataEffects r
+                 => AS.ActiveSetConfiguration
+                 -> Maybe AS.LSI_E
+                 -> NullVectorProjections k
+                 -> LA.Vector LA.R
+                 -> LA.Vector LA.R
+                 -> K.Sem r (LA.Vector LA.R)
+optimalWeightsAS asConfig mLSIE nvps projWs pV = do
+  -- convert to correct form for AS solver
+  let a = projToFullM nvps
+      lsiE = fromMaybe (AS.Original a) mLSIE
+      b = a LA.#> projWs
+      ic = AS.MatrixLower a (negate pV)
+  (resE, _) <- AS.optimalLSI (K.logLE (K.Debug 3)) asConfig lsiE b ic
+  case resE of
+    Left err -> PE.throw $ DED.TableMatchingException $ "ActiveSet.findOptimal: " <> err
+    Right ows -> pure ows
+
+viaOptimalWeightsAS :: K.KnitEffects r => Maybe AS.LSI_E -> OptimalOnSimplexF r
+viaOptimalWeightsAS mLSIE ptd projWs prodV = do
+  let n = VS.sum prodV
+      pV = VS.map (/ n) prodV
+  ows <- DED.mapPE $ optimalWeightsAS AS.defaultActiveSetConfig mLSIE (nullVectorProjections ptd) projWs pV
+  pure $ VS.map (* n) $ applyNSPWeights ptd ows pV
+
 
 viaNearestOnSimplex :: OptimalOnSimplexF r
 viaNearestOnSimplex nvps projWs prodV = do
@@ -364,8 +399,8 @@ projectToSimplex y = VS.fromList $ fmap (\x -> max 0 (x - tHat)) yL
     go 0 = t 0
     go k = let tk = t k in if tk > sY L.!! k then tk else go (k - 1)
 
-applyNSPWeightsO :: DED.EnrichDataEffects r => ObjectiveF -> ProjectionsToDiff k -> LA.Vector LA.R -> LA.Vector LA.R -> K.Sem r (LA.Vector LA.R)
-applyNSPWeightsO objF ptd nsWs pV = f <$> optimalWeights objF (nullVectorProjections ptd) nsWs pV
+applyNSPWeightsO :: DED.EnrichDataEffects r => ObjectiveF -> Double -> ProjectionsToDiff k -> LA.Vector LA.R -> LA.Vector LA.R -> K.Sem r (LA.Vector LA.R)
+applyNSPWeightsO objF pEps ptd nsWs pV = f <$> optimalWeights objF pEps (nullVectorProjections ptd) nsWs pV
   where f oWs = applyNSPWeights ptd oWs pV
 
 -- this aggregates over cells with the same given key

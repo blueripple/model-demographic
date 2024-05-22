@@ -66,6 +66,10 @@ mkNullSpacePartition :: LA.Matrix LA.R -> LA.Matrix LA.R -> NullSpacePartition
 mkNullSpacePartition known unknown = NullSpacePartition known (invertProjection known) unknown (invertProjection unknown) where
   invertProjection m = LA.tr m LA.<> LA.inv (m LA.<> LA.tr m)
 
+mkNullSpacePartitionOrtho :: LA.Matrix LA.R -> LA.Matrix LA.R -> NullSpacePartition
+mkNullSpacePartitionOrtho known unknown = NullSpacePartition known (invertProjection known) unknown (invertProjection unknown) where
+  invertProjection m = LA.tr m
+
 knownM :: NullSpacePartition -> LA.Matrix LA.R
 knownM (NullSpacePartition k _ _ _) = k
 
@@ -131,7 +135,7 @@ nullSpacePartitionSVD n sts =
       k = LA.ranksv (2.2e-16) (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
       nVs = LA.tr $ LA.dropColumns k v'
       nonRedundantConstraints = LA.tr $ LA.takeColumns k v'
-  in mkNullSpacePartition nonRedundantConstraints nVs
+  in mkNullSpacePartitionOrtho nonRedundantConstraints nVs
 
 contrastBasis :: Int -> LA.Matrix LA.R
 contrastBasis n = LA.fromRows (rowOnes : negIRows)
