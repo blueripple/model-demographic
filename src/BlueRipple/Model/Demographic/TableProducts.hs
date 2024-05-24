@@ -38,7 +38,7 @@ import qualified Frames.MapReduce as FMR
 import qualified Frames.Streamly.InCore as FSI
 
 import qualified Numeric.ActiveSet as AS
-import Numeric.ActiveSet (ActiveSetConfiguration(..), defaultActiveSetConfig, EqualityConstrainedSolver(..))
+import Numeric.ActiveSet (ActiveSetConfiguration(..), defaultActiveSetConfig, EqualityConstrainedSolver(..), Logging(..), NNLS_Start(..), precomputeFromE)
 import qualified Control.Foldl as FL
 import qualified Data.List as L
 import qualified Data.Map.Strict as M
@@ -350,29 +350,42 @@ optimalWeights objectiveF pEps nvps projWs pV = do
         pure oWs
 
 
+weightMapA :: (Double -> Double) -> LA.Vector Double -> LA.Matrix Double -> (LA.Matrix Double, [Int])
+weightMapA g pV a =
+  let f y = if y < 1e-12 then 0 else g y
+      invP = VS.map f pV
+      (zeroIs, nonZeroIs) = first (fmap fst) $ second (fmap fst) $ List.partition ((== 0) . snd) $ zip [0..] (VS.toList invP)
+      aNZ = (LA.diag invP LA.<> a) LA.?? (LA.Pos $ VS.fromList $ fmap fromIntegral nonZeroIs, LA.All)
+  in (aNZ, zeroIs)
+
+
 optimalWeightsAS :: DED.EnrichDataEffects r
                  => AS.ActiveSetConfiguration
+                 -> Maybe (Double -> Double)
                  -> Maybe AS.LSI_E
                  -> NullVectorProjections k
                  -> LA.Vector LA.R
                  -> LA.Vector LA.R
                  -> K.Sem r (LA.Vector LA.R)
-optimalWeightsAS asConfig mLSIE nvps projWs pV = do
+optimalWeightsAS asConfig mf mLSIE nvps projWs pV = do
   -- convert to correct form for AS solver
   let a = projToFullM nvps
-      lsiE = fromMaybe (AS.Original a) mLSIE
-      b = a LA.#> projWs
-      ic = AS.MatrixLower a (negate pV)
-  (resE, _) <- AS.optimalLSI (K.logLE (K.Debug 3)) asConfig lsiE b ic
+      (aNZ, zeroIs) = maybe (a, []) (\f -> weightMapA f pV a) mf
+      lsiE = fromMaybe (AS.Original aNZ) mLSIE
+      removeZeros =  VS.fromList . fmap snd . filter (not . (`elem` zeroIs) . fst) . zip [0..] . VS.toList
+      bNZ = aNZ LA.#> projWs
+      pVNZ = removeZeros pV
+      ic = AS.MatrixLower aNZ (negate pVNZ)
+  (resE, _) <- AS.optimalLSI (K.logLE K.Info) asConfig lsiE bNZ ic
   case resE of
     Left err -> PE.throw $ DED.TableMatchingException $ "ActiveSet.findOptimal: " <> err
     Right ows -> pure ows
 
-viaOptimalWeightsAS :: K.KnitEffects r => Maybe AS.LSI_E -> OptimalOnSimplexF r
-viaOptimalWeightsAS mLSIE ptd projWs prodV = do
+viaOptimalWeightsAS :: K.KnitEffects r => Maybe (Double -> Double) -> Maybe AS.LSI_E -> OptimalOnSimplexF r
+viaOptimalWeightsAS mf mLSIE ptd projWs prodV = do
   let n = VS.sum prodV
       pV = VS.map (/ n) prodV
-  ows <- DED.mapPE $ optimalWeightsAS AS.defaultActiveSetConfig mLSIE (nullVectorProjections ptd) projWs pV
+  ows <- DED.mapPE $ optimalWeightsAS AS.defaultActiveSetConfig mf mLSIE (nullVectorProjections ptd) projWs pV
   pure $ VS.map (* n) $ applyNSPWeights ptd ows pV
 
 

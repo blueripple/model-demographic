@@ -131,10 +131,10 @@ knownCharText (KnownSubset cs) = "+" <> T.pack cs
 nullSpacePartitionSVD :: Int -> [DED.Stencil Int] -> NullSpacePartition
 nullSpacePartitionSVD n sts =
   let cM = DED.mMatrix n sts
-      (_, s, v') = LA.svd cM
+      (_, s, v) = LA.svd cM
       k = LA.ranksv (2.2e-16) (max (LA.rows cM) (LA.cols cM)) (LA.toList s)
-      nVs = LA.tr $ LA.dropColumns k v'
-      nonRedundantConstraints = LA.tr $ LA.takeColumns k v'
+      nVs = LA.tr $ LA.dropColumns k v
+      nonRedundantConstraints = LA.tr $ LA.takeColumns k v
   in mkNullSpacePartitionOrtho nonRedundantConstraints nVs
 
 contrastBasis :: Int -> LA.Matrix LA.R
