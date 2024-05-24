@@ -354,10 +354,9 @@ weightMapA :: (Double -> Double) -> LA.Vector Double -> LA.Matrix Double -> (LA.
 weightMapA g pV a =
   let f y = if y < 1e-12 then 0 else g y
       invP = VS.map f pV
-      (zeroIs, nonZeroIs) = first (fmap fst) $ second (fmap fst) $ List.partition ((== 0) . snd) $ zip [0..] (VS.toList invP)
-      aNZ = (LA.diag invP LA.<> a) LA.?? (LA.Pos $ VS.fromList $ fmap fromIntegral nonZeroIs, LA.All)
-  in (aNZ, zeroIs)
-
+      (_, nonZeroIs) = first (fmap fst) $ second (fmap fst) $ List.partition ((== 0) . snd) $ zip [0..] (VS.toList invP)
+      aNZ = AS.subMatrixRL nonZeroIs (LA.diag invP LA.<> a)
+  in (aNZ, nonZeroIs)
 
 optimalWeightsAS :: DED.EnrichDataEffects r
                  => AS.ActiveSetConfiguration
@@ -370,11 +369,11 @@ optimalWeightsAS :: DED.EnrichDataEffects r
 optimalWeightsAS asConfig mf mLSIE nvps projWs pV = do
   -- convert to correct form for AS solver
   let a = projToFullM nvps
-      (aNZ, zeroIs) = maybe (a, []) (\f -> weightMapA f pV a) mf
+      (aNZ, nonZeroIs) = maybe (a, []) (\f -> weightMapA f pV a) mf
       lsiE = fromMaybe (AS.Original aNZ) mLSIE
-      removeZeros =  VS.fromList . fmap snd . filter (not . (`elem` zeroIs) . fst) . zip [0..] . VS.toList
+--      removeZeros =  VS.fromList . fmap snd . filter (not . (`elem` zeroIs) . fst) . zip [0..] . VS.toList
       bNZ = aNZ LA.#> projWs
-      pVNZ = removeZeros pV
+      pVNZ = AS.subVectorL nonZeroIs pV --removeZeros pV
       ic = AS.MatrixLower aNZ (negate pVNZ)
   (resE, _) <- AS.optimalLSI (K.logLE K.Info) asConfig lsiE bNZ ic
   case resE of
