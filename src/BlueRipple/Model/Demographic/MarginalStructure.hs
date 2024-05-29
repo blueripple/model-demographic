@@ -40,6 +40,8 @@ import qualified Numeric.LinearAlgebra as LA
 import qualified Numeric.NLOPT as NLOPT
 import qualified Data.Vector.Storable as VS
 
+import qualified Numeric.ActiveSet as AS
+
 normalize :: (Functor f, Foldable f) => Lens' a Double -> f a -> f a
 normalize l xs = let s = FL.fold (FL.premap (view l) FL.sum) xs in fmap (over l (/ s)) xs
 
@@ -435,6 +437,12 @@ innerProductCWD'' ma mb =
   in if na == 0 || nb == 0 then allZero else M.fromList $ zipWith (mkAssoc na) probsAB $ VS.toList solL
 {-# INLINEABLE innerProductCWD'' #-}
 
+{-
+nnlsSolve :: LA.Matrix Double -> LA.Vector Double -> LA.Vector Double -> K.Sem r (LA.Vector Double)
+nnlsSolve m rhs = do
+  let asConfig = AS.defaultConfig {AS.cfgStart = StartGS }
+  AS.optimalNNLS (K.logLE K.Info) asConfig m rhs
+-}
 
 positiveConstrainedSolve :: LA.Matrix Double -> LA.Vector Double -> LA.Vector Double -> LA.Vector Double
 positiveConstrainedSolve m rhs v0 =  if fst (objective v0) < 1 then v0 else g where
