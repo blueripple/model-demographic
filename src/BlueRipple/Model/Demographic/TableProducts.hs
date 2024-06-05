@@ -369,10 +369,13 @@ optimalWeightsAS :: DED.EnrichDataEffects r
 optimalWeightsAS asConfig mf mLSIE nvps projWs pV = do
   -- convert to correct form for AS solver
   let a = projToFullM nvps
-      (aNZ, nonZeroIs) = maybe (a, []) (\f -> weightMapA f pV a) mf
+  when (LA.cols a /= LA.size projWs)
+    $ PE.throw $ DED.TableMatchingException
+    $ "optimalWeightAS: cols(B^\\dagger) = " <> show (LA.cols a) <> " != " <> show (LA.size pV) <> " = length(pV)"
+  let (aNZ, nonZeroIs) = maybe (a, [0..(LA.rows a - 1)]) (\f -> weightMapA f pV a) mf
       lsiE = fromMaybe (AS.Original aNZ) mLSIE
 --      removeZeros =  VS.fromList . fmap snd . filter (not . (`elem` zeroIs) . fst) . zip [0..] . VS.toList
-      bNZ = aNZ LA.#> projWs
+  let bNZ = aNZ LA.#> projWs
       pVNZ = AS.subVectorL nonZeroIs pV --removeZeros pV
       ic = AS.MatrixLower aNZ (negate pVNZ)
   (resE, _) <- AS.optimalLSI (K.logLE K.Info) asConfig lsiE bNZ ic
