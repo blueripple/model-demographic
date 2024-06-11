@@ -1,4 +1,4 @@
-packages: ./ ~/DataScience/data-science-utils
+packages: ./ ~/DataScience/data-science-utils ../data-ACS-Tables
 jobs: 4
 with-compiler: ghc
 
@@ -30,7 +30,7 @@ import: ../cabal_repo_imports/post-tools.project
 import: ../cabal_repo_imports/data-types.project
 import: ../cabal_repo_imports/data-tools.project
 import: ../cabal_repo_imports/data-loading.project
-import: ../cabal_repo_imports/data-ACS-Tables.project
+--import: ../cabal_repo_imports/data-ACS-Tables.project
 import: ../cabal_repo_imports/data-ACS-PUMS.project
 import: ../cabal_repo_imports/model-tools.project
 import: ../cabal_repo_imports/haskell-stan.project
