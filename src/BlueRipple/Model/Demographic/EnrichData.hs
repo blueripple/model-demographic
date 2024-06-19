@@ -30,6 +30,7 @@ import qualified BlueRipple.Data.Types.Demographic as DT
 
 import qualified Knit.Report as K
 import qualified Knit.Effect.PandocMonad as KPM
+import qualified Knit.Effect.Logger as KL
 import qualified Text.Pandoc.Error as PA
 import qualified Polysemy as P
 import qualified Polysemy.Error as PE
@@ -73,7 +74,7 @@ instance Exception EnrichDataException
 
 -- IO here because we need to be able to execute things requiring a PrimMonad environment
 -- for Frames inCore
-type EnrichDataEffects r = (K.LogWithPrefixesLE r, P.Member (PE.Error EnrichDataException) r,  P.Member (P.Embed IO) r)
+type EnrichDataEffects r = (K.LogWithPrefixesLE r, P.Members [PE.Error EnrichDataException, P.Embed IO, KL.Logger KL.LogCat] r)
 
 logDebug :: EnrichDataEffects r => Text -> P.Sem r ()
 logDebug = K.logLE (K.Debug 3)

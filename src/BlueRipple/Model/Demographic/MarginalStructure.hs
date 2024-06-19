@@ -4,6 +4,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE Strict      #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -153,13 +154,6 @@ mapSubset f = S.fromList . mconcat . fmap inverseImage . S.toList
   where
     inverseImage k = filter ((== k) . f) $ S.toList BRK.elements
 
-{-
-identityMarginalStructure :: forall k w . (Ord k, BRK.FiniteSet k, Monoid w)
-                          => Lens' w Double -> MarginalStructure w k
-identityMarginalStructure wgtLens = MarginalStructure (fmap (DED.Stencil . pure) $ [0..(numCats-1)] ) (M.toList <$> normalizeAndFillMapFld wgtLens)
-  where
-    numCats = S.size $ BRK.elements @k
--}
 identityMarginalStructure :: forall k w . (Ord k, BRK.FiniteSet k, Monoid w)
                           => Lens' w Double -> MarginalStructure w k
 identityMarginalStructure wgtLens = MarginalStructure eachAsSubset (M.toList <$> normalizeAndFillMapFld wgtLens)
@@ -187,19 +181,6 @@ stencilToSubset (DED.Stencil indices) = S.fromList $ fmap snd $ filter fst $ zip
     allMap = IM.fromList $ fmap (, False) [0..(nElts - 1)]
     subsetMap = IM.fromList $ fmap (, True) $ indices
     comboMap = IM.unionWith (||) allMap subsetMap
-
---productFld :: MarginalStructure w k -> FL.Fold (k, w) [(k,w)]
---productFld ms = case ms of
---  MarginalStructure _ _ -> undefined
-
-{-
-stencilsToProductFld :: forall k w . (BRK.FiniteSet k, Ord k, Monoid w) => [DED.Stencil Int] -> FL.Fold (k, w) [(k, w)]
-stencilsToProductFld stencils =
-  let allKeys = BRK.elements @k
-      nKeys = S.size allKeys
-      cM = DED.mMatrix nKeys stencils
-  in fmap M.toList $ zeroFillSummedMapFld
--}
 
 msSubsets :: MarginalStructure w k -> [Set k]
 msSubsets (MarginalStructure subsets _) = subsets
@@ -361,8 +342,43 @@ updateWeightCWD :: Double -> CellWithDensity -> CellWithDensity
 updateWeightCWD x (CellWithDensity wgt pwDensity) = CellWithDensity x (pwDensity * if wgt == 0 then 1 else x / wgt)
 -}
 
+
+data DensityProduct = GMDensity
+                    | SimpleDensity
+                    | SVDDensity
+                    | PosConstrainedDensity deriving (Show, Eq)
+
+configuredInnerProductCWD :: (Ord a, BRK.FiniteSet a, Ord b, BRK.FiniteSet b
+                             , Show a, Show b)
+                          => DensityProduct ->  Map a CellWithDensity -> Map b CellWithDensity -> Map (a, b) CellWithDensity
+configuredInnerProductCWD densP ma mb = f ma mb where
+  f =  case densP of
+         GMDensity -> innerProductGM
+         SimpleDensity -> innerProductCWD
+         SVDDensity -> innerProductCWD'
+         PosConstrainedDensity -> innerProductCWD''
+
 cwdToRec :: CellWithDensity -> F.Record [DT.PopCount, DT.PWPopPerSqMile]
 cwdToRec (CellWithDensity p d) = round p F.&: d F.&: V.RNil
+
+innerProductGM :: (Ord a, Ord b) => Map a CellWithDensity -> Map b CellWithDensity -> Map (a, b) CellWithDensity
+innerProductGM ma mb = M.fromList [f ae be | ae <- M.toList ma, be <- forProd mb]
+  where
+    f (a, CellWithDensity xw _) (b, (yw', _)) = ((a, b), CellWithDensity (xw * yw') gmd)
+    gmdF = fmap snd $ DT.densityAndPopFld' DT.Geometric (const 1) cwdWgt cwdDensity
+    gmdA = FL.fold gmdF ma
+    gmdB = FL.fold gmdF mb
+    gmd = sqrt $ gmdA * gmdB
+    forProd :: Map x CellWithDensity -> [(x, (Double, Double))]
+    forProd m =
+      let evenFrac = 1 / realToFrac (M.size m)
+          sumWgtFld = FL.premap cwdWgt FL.sum
+--          sumWgtdDensityFld = FL.premap (\t -> cwdWgt t * cwdDensity t) FL.sum
+          sumWgts = FL.fold sumWgtFld m
+          g (CellWithDensity x xwd)
+            | sumWgts == 0 = (evenFrac, xwd)
+            | otherwise = (x / sumWgts, xwd)
+      in M.toList $ fmap g m
 
 innerProductCWD :: (Ord a, Ord b) => Map a CellWithDensity -> Map b CellWithDensity -> Map (a, b) CellWithDensity
 innerProductCWD ma mb = M.fromList [f ae be | ae <- M.toList ma, be <- forProd mb]

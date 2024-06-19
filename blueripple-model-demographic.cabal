@@ -31,6 +31,7 @@ library
 
   hs-source-dirs: src
   ghc-options: -Wall -O2 -fno-warn-unused-top-binds -funbox-strict-fields
+  default-extensions: StrictData
   build-depends:
      blueripple-small-data-sets
    , blueripple-data-loading
@@ -68,6 +69,7 @@ library
    , profunctors >= 5.6 && < 6
    , relude >= 1.0.0 && < 1.3
    , say >= 0.1 && < 0.2
+   , strict >= 0.5 && < 0.6
    , text >=1.2.3 && < 2.2
    , vector >= 0.12 && < 0.14
    , vinyl >= 0.13 && < 0.15
