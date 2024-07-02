@@ -14,6 +14,7 @@
 {-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE TupleSections        #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UnicodeSyntax        #-}
 --{-# LANGUAGE NoStrictData #-}
 
@@ -44,6 +45,7 @@ import qualified BlueRipple.Data.CachingCore as BRCC
 import qualified BlueRipple.Data.LoadersCore as BRLC
 
 import qualified Knit.Report as K
+import qualified Knit.Utilities.Streamly as KS
 
 import Control.Lens (Lens',view, (^.))
 import qualified Control.Foldl as FL
@@ -52,21 +54,32 @@ import qualified Data.List as List
 import qualified Data.Map as M
 import qualified Data.Map.Merge.Strict as MM
 import qualified Data.Set as S
+import qualified Data.Vector.Unboxed as VU
 import qualified Data.Vector.Storable as VS
 import qualified Data.Vinyl as V
 import qualified Data.Vinyl.TypeLevel as V
-import qualified Data.Strict.Tuple as DST
+--import qualified Data.Strict.Tuple as DST
 import qualified Frames as F
 import qualified Frames.Melt as F
 import qualified Frames.Constraints as FC
 import qualified Frames.Serialize as FS
 import qualified Frames.Streamly.Transform as FST
 import qualified Frames.Streamly.InCore as FSI
+import qualified Frames.Streamly.Streaming.Streamly as FSS
+import qualified Frames.Streamly.TH as FSS (DefaultStream)
 import qualified Frames.MapReduce as FMR
 import qualified Control.MapReduce as MR
 import qualified Numeric
 import qualified Numeric.LinearAlgebra as LA
 import qualified Colonnade as C
+import qualified Flat
+
+import qualified Streamly.Data.Stream as St
+import qualified Streamly.Data.Fold as StF
+import qualified Streamly.Internal.Data.Stream as St (concat)
+import qualified Streamly.Data.Stream.Prelude as StC
+import qualified Streamly.Data.StreamK as StK
+
 
 import GHC.TypeLits (Symbol)
 
@@ -171,6 +184,68 @@ type CensusCASR loc = OuterKeyR loc V.++ KeysWD CASR
 type CensusCASER loc = OuterKeyR loc V.++ KeysWD CASER
 type CensusCA6SR loc = OuterKeyR loc V.++ KeysWD CA6SR
 type CensusSRCA6 loc = OuterKeyR loc V.++ KeysWD SRCA6
+
+type OrderedWithZerosC ok ks = (Ord (F.Record (ok V.++ ks))
+                               , Ord (F.Record ok)
+                               , Keyed.FiniteSet (F.Record ks)
+                               , ok F.⊆ (ok V.++ KeysWD ks)
+                               , FSI.RecVec (ok V.++ KeysWD ks)
+                               )
+
+data OrderedWithZeros ok ks where
+  OrderedWithZeros :: OrderedWithZerosC ok ks => (F.FrameRec (ok V.++ KeysWD ks)) -> S.Set (F.Record ok) -> OrderedWithZeros ok ks
+
+instance (V.RMap (ok V.++ KeysWD ks), FSI.RecVec (ok V.++ KeysWD ks), FS.RecFlat (ok V.++ KeysWD ks)
+         , V.RMap ok, FSI.RecVec ok, FS.RecFlat ok
+         , OrderedWithZerosC ok ks)
+  => Flat.Flat (OrderedWithZeros ok ks) where
+    size  (OrderedWithZeros fr idx) = Flat.size (FS.SFrame fr, FS.SFrame $ F.toFrame . S.toList $ idx)
+    encode (OrderedWithZeros fr idx) = Flat.encode (FS.SFrame fr, FS.SFrame $ F.toFrame . S.toList $ idx)
+    decode = (\(ordSF, idxSF) -> OrderedWithZeros (FS.unSFrame ordSF) (S.fromList $ FL.fold FL.list $ FS.unSFrame idxSF)) <$> Flat.decode
+
+type Stream a = St.Stream KS.StreamlyM a
+type RecStream rs = Stream (F.Record rs)
+type FrameStream rs = Stream (F.FrameRec rs)
+
+orderedWithZeros :: forall ok ks . (Ord (F.Record ok)
+                                   , Ord (F.Record ks)
+                                   , ok F.⊆ (ok V.++ KeysWD ks)
+                                   , KeysWD ks F.⊆ (ok V.++ KeysWD ks)
+                                   , FSI.RecVec (ok V.++ KeysWD ks)
+                                   , FSI.RecVec (KeysWD ks)
+                                   , ks F.⊆ KeysWD ks
+                                   , OrderedWithZerosC ok ks
+                                   , FC.ElemsOf (KeysWD ks) [DT.PopCount, DT.PWPopPerSqMile]
+                                   )
+                 => FL.Fold (F.Record (ok V.++ KeysWD ks)) (OrderedWithZeros ok ks)
+orderedWithZeros = OrderedWithZeros <$> ordFFld <*> idxFld
+  where
+    ordFFld = FMR.concatFold
+              $ FMR.mapReduceFold
+              FMR.noUnpack
+              (FMR.assignKeysAndData @ok @(KeysWD ks))
+              (FMR.makeRecsWithKey id $ FMR.ReduceFold $ const innerFld)
+    idxFld = FL.premap (F.rcast @ok) FL.set
+    kv r = (F.rcast @ks r, DTM3.cwdF r)
+    toRec (k, cwd) = k F.<+> DMS.cwdToRec cwd
+    innerFld = fmap (F.toFrame . fmap toRec . M.toList) $ FL.premap kv DMS.zeroFillSummedMapFld
+
+
+-- To do calcs we want these tables available at each outer key
+streamByOuterWZ :: forall ok ks . (FSI.RecVec (ok V.++ KeysWD ks)) => OrderedWithZeros ok ks -> FrameStream (ok V.++ KeysWD ks)
+streamByOuterWZ (OrderedWithZeros fr _) =
+  let n = S.size (Keyed.elements @(F.Record ks))
+  in St.groupsOf n (FSI.inCoreAoS_F @_ @FSS.DefaultStream @KS.StreamlyM) . StK.toStream $ StK.fromFoldable fr
+
+-- once we've produced tables from calculations we might want things back in OWZ form for the next stage or to cache
+strByOuterWZToOWZ :: forall ok ks f . (Foldable f, OrderedWithZerosC ok ks)
+                  => Stream (f (F.Record (ok V.++ KeysWD ks)))
+                  -> KS.StreamlyM (OrderedWithZeros ok ks)
+strByOuterWZToOWZ = St.fold (StF.unTee owzFld) . toFullStr
+  where idxFld = StF.lmap (F.rcast @ok) $ StF.toSet
+        frFld = FSI.inCoreAoS_F @(ok V.++ KeysWD ks) @FSS.DefaultStream @KS.StreamlyM
+        owzFld = OrderedWithZeros <$> (StF.Tee frFld) <*> (StF.Tee idxFld)
+        toFullStr = St.concatMap (StK.toStream . StK.fromFoldable)
 
 type MarginalStructureC ks as bs qs w =
   (Monoid w
@@ -303,10 +378,9 @@ type ProductC cs as bs = (
   , as F.⊆ KeysWD (cs V.++ as)
   , cs F.⊆ KeysWD (cs V.++ bs)
   , bs F.⊆ KeysWD (cs V.++ bs)
-  , F.ElemOf (KeysWD (cs V.++ as)) DT.PopCount
-  , F.ElemOf (KeysWD (cs V.++ as)) DT.PWPopPerSqMile
-  , F.ElemOf (KeysWD (cs V.++ bs)) DT.PopCount
-  , F.ElemOf (KeysWD (cs V.++ bs)) DT.PWPopPerSqMile
+  , FC.ElemsOf (KeysWD (cs V.++ as)) [DT.PopCount, DT.PWPopPerSqMile]
+  , FC.ElemsOf (KeysWD (cs V.++ bs)) [DT.PopCount, DT.PWPopPerSqMile]
+  , FC.ElemsOf (KeysWD (cs V.++ as V.++ bs)) [DT.PopCount, DT.PWPopPerSqMile]
   , KeysWD (cs V.++ as V.++ bs) F.⊆ (cs V.++ (as V.++ (bs V.++ '[DT.PopCount, DT.PWPopPerSqMile])))
   )
 
@@ -396,7 +470,15 @@ type TableProductsC outerK cs as bs =
   , V.ReifyConstraint Show F.ElField (KeysWD (cs V.++ as V.++ bs))
   , V.RecordToList (KeysWD (cs V.++ as V.++ bs))
   , Show (F.Record (KeysWD (cs V.++ as V.++ bs)))
+  , V.RMap (outerK V.++ ((cs V.++ as) V.++ [DT.PopCount, DT.PWPopPerSqMile]))
+  , V.ReifyConstraint Show F.ElField (outerK V.++ ((cs V.++ as) V.++ [DT.PopCount, DT.PWPopPerSqMile]))
+  , V.RecordToList (outerK V.++ ((cs V.++ as) V.++ [DT.PopCount, DT.PWPopPerSqMile]))
+  , V.RMap (outerK V.++ ((cs V.++ bs) V.++ [DT.PopCount, DT.PWPopPerSqMile]))
+  , V.ReifyConstraint Show F.ElField (outerK V.++ ((cs V.++ bs) V.++ [DT.PopCount, DT.PWPopPerSqMile]))
+  , V.RecordToList (outerK V.++ ((cs V.++ bs) V.++ [DT.PopCount, DT.PWPopPerSqMile]))
   )
+
+
 
 tableProducts :: forall outerK cs as bs r .
                  (
@@ -452,9 +534,17 @@ tableProducts densP cacheKey caTables_C cbTables_C = K.wrapPrefix "tableProducts
             when (FL.fold FL.length resExc > 0) $ do
               K.logLE K.Error $ "Bad densities after tableProductWithDensity at k=" <> show k
               BRLC.logFrame resExc
+              K.logLE K.Error $ "Input Table A"
+              BRLC.logFrame cas
+              K.logLE K.Error $ "Input Table B"
+              BRLC.logFrame cbs
             when (FL.fold FL.length popExc > 0) $ do
               K.logLE K.Error $ "Bad populations after tableProductWithDensity at k=" <> show k
               BRLC.logFrame popExc
+              K.logLE K.Error $ "Input Table A"
+              BRLC.logFrame cas
+              K.logLE K.Error $ "Input Table B"
+              BRLC.logFrame cbs
             pure res
           whenMissingCAF k _ = K.knitError $ "Missing ca table for k=" <> show k
           whenMissingCBF k _ = K.knitError $ "Missing cb table for k=" <> show k
@@ -471,8 +561,176 @@ tableProducts densP cacheKey caTables_C cbTables_C = K.wrapPrefix "tableProducts
       pure $ F.toFrame $ concat $ fmap (FL.fold FL.list . assocToFrame) $ M.toList productMap
   BRCC.retrieveOrMakeFrame cacheKey deps (uncurry f)
 
+
+type CheckedTPWDC cs as bs ok =
+  (ProductC cs as bs
+  , ok F.⊆ (ok V.++ KeysWD (cs V.++ as))
+  , V.RMap ok
+  , V.ReifyConstraint Show F.ElField ok
+  , V.RecordToList ok
+  , FC.ElemsOf (ok V.++ KeysWD (cs V.++ as)) '[DT.PopCount]
+  , FC.ElemsOf (ok V.++ KeysWD (cs V.++ bs)) '[DT.PopCount]
+  , KeysWD (cs V.++ as) F.⊆ (ok V.++ KeysWD (cs V.++ as))
+  , KeysWD (cs V.++ bs) F.⊆ (ok V.++ KeysWD (cs V.++ bs))
+  )
+
+firstOuter :: forall ok rs . (ok  F.⊆ rs) => F.FrameRec rs -> KS.StreamlyM (F.Record ok)
+firstOuter fr =  case fmap (F.rcast @ok . head) $ nonEmpty $ FL.fold FL.list $ F.takeRows 1 fr of
+                   Nothing -> KS.errStreamly "firstOuter: Empty table!"
+                   Just x -> pure x
+
+checkedTPWD :: forall cs as bs ok .
+               (CheckedTPWDC cs as bs ok
+               , ok F.⊆ (ok V.++ KeysWD (cs V.++ bs))
+               , Eq (F.Record ok)
+               )
+            => DMS.DensityProduct
+            -> F.FrameRec (ok V.++ KeysWD (cs V.++ as))
+            -> F.FrameRec (ok V.++ KeysWD (cs V.++ bs))
+            -> KS.StreamlyM (F.FrameRec (ok V.++ KeysWD (cs V.++ as V.++ bs)))
+checkedTPWD densP ca cb = do
+  let checkFrames :: (Show k, F.ElemOf gs DT.PopCount, F.ElemOf hs DT.PopCount)
+                  => k -> F.FrameRec gs -> F.FrameRec hs -> KS.StreamlyM ()
+      checkFrames k ta tb = do
+        let na = FL.fold (FL.premap (view DT.popCount) FL.sum) ta
+            nb = FL.fold (FL.premap (view DT.popCount) FL.sum) tb
+        when (abs (na - nb) > 20) $ KS.errStreamly $ "tableProducts: Mismatched tables at k=" <> show k <> ". N(ca)=" <> show na <> "; N(cb)=" <> show nb
+        pure ()
+      densityFilter r = let x = r ^. DT.pWPopPerSqMile in x < 0  || x > 1e6 && r ^. DT.popCount > 0
+      popCheckFilter = (< 0) . view DT.popCount
+
+  ka <- firstOuter @ok ca
+  kb <- firstOuter @ok cb
+
+  when (ka /= kb) $ KS.errStreamly $ "Mismatched keys in checkedTPWD! key(a)=" <> show ka <>  "; key(b)=" <> show kb
+  checkFrames ka ca cb
+  let res = tableProductWithDensity @cs @as @bs densP (fmap F.rcast ca) (fmap F.rcast cb)
+      resExc = F.filterFrame densityFilter res
+      popExc = F.filterFrame popCheckFilter res
+  when (FL.fold FL.length resExc > 0) $
+    KS.errStreamly $ "Bad densities after tableProductWithDensity at k=" <> show ka
+  when (FL.fold FL.length popExc > 0) $ do
+    KS.errStreamly $ "Bad populations after tableProductWithDensity at k=" <> show ka
+  pure $ fmap (ka F.<+>) res
+
+type TableProductsOWZC ok cs as bs =
+  (CheckedTPWDC cs as bs ok
+  , ok F.⊆ (ok V.++ KeysWD (cs V.++ bs))
+  , ok F.⊆ (ok V.++ KeysWD (cs V.++ as V.++ bs))
+  , Eq (F.Record ok)
+  , FSI.RecVec (ok V.++ KeysWD (cs V.++ as))
+  , FSI.RecVec (ok V.++ KeysWD (cs V.++ bs))
+  , FSI.RecVec (ok V.++ KeysWD (cs V.++ as V.++ bs))
+  , V.RMap (ok V.++ KeysWD (cs V.++ as V.++ bs))
+  , FSI.RecVec ok
+  , FS.RecFlat ok
+  , FS.RecFlat (ok V.++ KeysWD (cs V.++ as V.++ bs))
+  , Ord (F.Record ok)
+  , Ord (F.Record (ok V.++ (cs V.++ as V.++ bs)))
+  , Keyed.FiniteSet (F.Record (cs V.++ as V.++ bs))
+  )
+
+tableProductsOWZ :: forall ok cs as bs r .
+                    (K.KnitEffects r, BRCC.CacheEffects r
+                    , TableProductsOWZC ok cs as bs
+                   )
+                 => DMS.DensityProduct
+                 -> Text
+                 -> K.ActionWithCacheTime r (OrderedWithZeros ok (cs V.++ as))
+                 -> K.ActionWithCacheTime r (OrderedWithZeros ok (cs V.++ bs))
+                 -> K.Sem r (K.ActionWithCacheTime r (OrderedWithZeros ok (cs V.++ as V.++ bs)))
+tableProductsOWZ densP cacheKey owzA_C owzB_C = K.wrapPrefix "tableProductsOWZ" $ do
+  let deps = (,) <$> owzA_C <*> owzB_C
+      f :: OrderedWithZeros ok (cs V.++ as)
+        -> OrderedWithZeros ok (cs V.++ bs)
+        -> K.Sem r (OrderedWithZeros ok (cs V.++ as V.++ bs))
+      f owzA@(OrderedWithZeros cas idxa) owzB@(OrderedWithZeros cbs idxb) = do
+        K.logLE K.Info $ "Building/re-building products for key=" <> cacheKey
+        isEqual <- K.logTiming (K.logLE K.Info) "Checking index equality" $ pure $ idxa == idxb
+        when (not isEqual) $ K.knitError "tableProductsOWZ: Input tables have mismatched indices!"
+        K.logLE K.Diagnostic $ "Frame for Table A has " <> show (F.frameLength cas)
+        K.logLE K.Diagnostic $ "Frame for Table B has " <> show (F.frameLength cbs)
+        let prods :: FrameStream (ok V.++ KeysWD (cs V.++ as V.++ bs))
+            prods = StC.parZipWithM (StC.ordered True) (checkedTPWD @cs @as @bs @ok densP)
+                    (streamByOuterWZ owzA) (streamByOuterWZ owzB)
+        prodsOWZ <- K.logTiming (K.logLE K.Info) "Computing products..."
+                    $ KS.streamlyToKnit
+                    $ strByOuterWZToOWZ prods
+        pure prodsOWZ
+  BRCC.retrieveOrMakeD cacheKey deps (uncurry f)
+
+data CovariatesAndProdV g  where
+  CovariatesAndProdV :: Ord g => g -> VS.Vector Double -> VU.Vector DMS.CellWithDensity -> CovariatesAndProdV g
+
+instance (Ord g, Flat.Flat g) => Flat.Flat (CovariatesAndProdV g) where
+  size (CovariatesAndProdV g cV pV) = Flat.size (g, cV, pV)
+  encode (CovariatesAndProdV g cV pV) = Flat.encode (g ,cV, pV)
+  decode = (\(g, cV, pV) -> CovariatesAndProdV g cV pV) <$> Flat.decode
+
+type TableCovariatesC ok cs as bs = (FSI.RecVec (ok V.++ KeysWD (cs V.++ as)), FSI.RecVec (ok V.++ KeysWD (cs V.++ bs)))
+
+covariatesAndProdVs :: forall ok qs r .
+                   (K.KnitEffects r, BRCC.CacheEffects r
+                   , FSI.RecVec (ok V.++ KeysWD qs)
+                   )
+                    => (F.FrameRec (ok V.++ KeysWD qs) -> KS.StreamlyM (CovariatesAndProdV (F.Record ok)))
+                    -> OrderedWithZeros ok qs
+                    -> Stream (CovariatesAndProdV (F.Record ok))
+covariatesAndProdVs covF owzP = StC.parMapM (StC.ordered True) covF (streamByOuterWZ owzP)
+
+tp3CovariatesAndProdVs :: forall ok qs . (ok F.⊆ (ok V.++ KeysWD qs)
+                 , FC.ElemsOf (ok V.++ KeysWD qs) [DT.PopCount, DT.PWPopPerSqMile]
+                 , Ord (F.Record ok)
+                 )
+              => LA.Matrix Double -> F.FrameRec (ok V.++ KeysWD qs) -> KS.StreamlyM (CovariatesAndProdV (F.Record ok))
+tp3CovariatesAndProdVs cMat pFrame = do
+  g <- firstOuter @ok pFrame
+  let vFldM :: FL.FoldM KS.StreamlyM (F.Record (ok V.++ KeysWD qs)) (VU.Vector DMS.CellWithDensity)
+      vFldM =  FL.premapM (pure . DTM3.cwdF) FL.vectorM
+      popAndDensFld = FL.premap DTM3.cwdF popAndpwDensityFld
+      safeDivBy x y = if x /= 0 then y / realToFrac x else 0
+      posLog x = if x < 1 then 0 else Numeric.log x
+      toCovs (pop, dens) v =
+        let pV = VS.map (safeDivBy pop) $ VS.convert $ VU.map DMS.cwdWgt v
+        in CovariatesAndProdV g  (VS.concat [VS.singleton (posLog dens), logitMarginals cMat pV]) v
+  FL.foldM (toCovs <$> FL.generalize popAndDensFld <*> vFldM) pFrame
+{-
+a is used to predict alpha (or could be alpha). Then we optimize to get final table.
+-}
+
+-- alpha -> product -> full table
+type OnSimplexer = VS.Vector Double -> VS.Vector Double -> KS.StreamlyM (VS.Vector Double)
+
+
+type TablePredictionsC ok qs =
+  (Ord (F.Record ok)
+  , Keyed.FiniteSet (F.Record qs)
+  , Ord (F.Record (ok V.++ qs))
+  , ok F.⊆ (ok V.++ KeysWD qs)
+  , FSI.RecVec (ok V.++ KeysWD qs)
+  )
+
+tablePredictions :: forall ok qs a r . (K.KnitEffects r, BRCC.CacheEffects r, TablePredictionsC ok qs)
+                 => (a -> KS.StreamlyM (VS.Vector Double))
+                 -> (a -> VU.Vector DMS.CellWithDensity)
+                 -> (a -> F.Record ok)
+                 -> OnSimplexer
+                 -> Stream a
+                 -> K.Sem r (OrderedWithZeros ok qs)
+tablePredictions alphaPredictor prodCWD outer onSimplexer covsAndProds = do
+  let keyList = S.toList $ Keyed.elements @(F.Record qs)
+      pop a = VU.sum $ VU.map DMS.cwdWgt $ prodCWD a
+      fullCWD a v = let n = pop a in VU.zipWith DMS.updateWgt (prodCWD a) (VU.map (* n) $ VU.convert v)
+      toRec :: F.Record ok -> F.Record qs -> DMS.CellWithDensity -> F.Record (ok V.++ KeysWD qs)
+      toRec ok k cwd = ok F.<+> k F.<+> ((round (DMS.cwdWgt cwd) F.&: DMS.cwdDensity cwd F.&: V.RNil) :: F.Record [DT.PopCount, DT.PWPopPerSqMile])
+      f a = alphaPredictor a
+            >>= onSimplexer (VS.convert $ VU.map DMS.cwdWgt $ prodCWD a)
+            >>= pure . zipWith (toRec $ outer a) keyList . VU.toList . fullCWD a
+  KS.streamlyToKnit $ strByOuterWZToOWZ $ StC.parMapM (StC.ordered True) f covsAndProds
+
 censusASR_CSR_Products :: forall r loc .
                           (K.KnitEffects r, BRCC.CacheEffects r
+                          , TableProductsC (OuterKeyR loc) SR '[DT.CitizenC] '[DT.Age6C]
                           , Key loc (KeysWD CA6SR) F.⊆ CensusSRCA6 loc
                           , Ord (F.Record loc)
                           , V.ReifyConstraint Show F.ElField loc
@@ -524,6 +782,7 @@ type LogitMarginalsC cs as bs =
   , cs V.++ as F.⊆ ((cs V.++ as) V.++ bs)
   , cs V.++ bs F.⊆ ((cs V.++ as) V.++ bs)
   )
+
 
 logitMarginalsCMatrix :: forall (cs :: [(Symbol, Type)]) (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) .
                              (LogitMarginalsC cs as bs

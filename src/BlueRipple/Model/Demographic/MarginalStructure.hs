@@ -1,12 +1,17 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE Strict      #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UnicodeSyntax #-}
@@ -37,11 +42,20 @@ import qualified Data.Vinyl as V
 import qualified Data.Vinyl.TypeLevel as V
 import qualified Frames as F
 
+import qualified Flat
+
 import qualified Numeric.LinearAlgebra as LA
 import qualified Numeric.NLOPT as NLOPT
+
+import qualified Data.Vector.Generic as VG
 import qualified Data.Vector.Storable as VS
+import qualified Data.Vector.Unboxed as VU
 
 import qualified Numeric.ActiveSet as AS
+
+import qualified Data.Vector.Unboxed.Deriving as DU
+
+
 
 normalize :: (Functor f, Foldable f) => Lens' a Double -> f a -> f a
 normalize l xs = let s = FL.fold (FL.premap (view l) FL.sum) xs in fmap (over l (/ s)) xs
@@ -308,6 +322,8 @@ tableProduct outerProduct aTableMap bTableMap = MM.merge
     whenMatched _ = outerProduct
 {-# INLINEABLE tableProduct #-}
 
+
+
 innerProductSum :: (Ord a, Ord b, Eq x, Fractional x) => Map a (Sum x) -> Map b (Sum x) -> Map (a, b) (Sum x)
 innerProductSum ma mb = M.fromList [f ae be | ae <- M.toList ma, be <- fracs mb]
       where
@@ -316,13 +332,15 @@ innerProductSum ma mb = M.fromList [f ae be | ae <- M.toList ma, be <- fracs mb]
         fracs m = let s = getSum (FL.fold FL.mconcat m) in M.toList $ if s == 0 then m else fmap (Sum . (/ s) . getSum) m
 {-# INLINEABLE innerProductSum #-}
 
-data CellWithDensity = CellWithDensity { cwdWgt :: !Double, cwdDensity :: !Double } deriving (Show)
+data CellWithDensity = CellWithDensity { cwdWgt :: !Double, cwdDensity :: !Double } deriving (Show, Generic, Flat.Flat)
+
 updateWgt :: CellWithDensity -> Double -> CellWithDensity
 updateWgt (CellWithDensity _ wd) x = CellWithDensity x wd
 {-# INLINE updateWgt #-}
 
 cwdWgtLens :: Lens' CellWithDensity Double --(CellWithDensity -> Double, (Double -> Double) -> CellWithDensity -> CellWithDensity)
 cwdWgtLens = lens cwdWgt updateWgt
+{-# INLINEABLE cwdWgtLens #-}
 
 safeDiv :: Double -> Double -> Double
 safeDiv x y = if y /= 0 then x / y else 0
@@ -332,6 +350,7 @@ instance Semigroup CellWithDensity where
     CellWithDensity
     (x + y)
     ((x * xwd + y * ywd) `safeDiv` (x + y))
+  {-# INLINEABLE (<>) #-}
 
 instance Semigroup CellWithDensity => Monoid CellWithDensity where
   mempty = CellWithDensity 0 0
@@ -379,6 +398,7 @@ innerProductGM ma mb = M.fromList [f ae be | ae <- M.toList ma, be <- forProd mb
             | sumWgts == 0 = (evenFrac, xwd)
             | otherwise = (x / sumWgts, xwd)
       in M.toList $ fmap g m
+{-# INLINEABLE innerProductGM #-}
 
 innerProductCWD :: (Ord a, Ord b) => Map a CellWithDensity -> Map b CellWithDensity -> Map (a, b) CellWithDensity
 innerProductCWD ma mb = M.fromList [f ae be | ae <- M.toList ma, be <- forProd mb]
@@ -488,6 +508,11 @@ positiveConstrainedSolve m rhs v0 =  if fst (objective v0) < 1 then v0 else g wh
       NLOPT.MAXTIME_REACHED -> let x = NLOPT.solutionParams solution in trace ("positiveConstrainedSolve: NLOPT Solver hit max time.") x
       _ -> NLOPT.solutionParams solution
 
+
+DU.derivingUnbox "CellWithDensity"
+  [t|CellWithDensity -> (Double, Double)|]
+  [|\(CellWithDensity w d) -> (w, d)|]
+  [|\(w, d) -> CellWithDensity w d|]
 
 {-
 -- given a k2 product fold and a map (k1 -> k2) we can generate a k1 product zero-info product fold by assuming every k1 which maps to a k2

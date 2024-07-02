@@ -23,6 +23,7 @@ module BlueRipple.Model.Demographic.TableProducts
   (
     module BlueRipple.Model.Demographic.TableProducts
   , module Numeric.ActiveSet
+  , module Numeric.NNLS.LH
   )
 where
 
@@ -40,7 +41,7 @@ import qualified Frames.MapReduce as FMR
 import qualified Frames.Streamly.InCore as FSI
 
 import qualified Numeric.ActiveSet as AS
-import Numeric.ActiveSet (ActiveSetConfiguration(..), defaultActiveSetConfig, EqualityConstrainedSolver(..), Logging(..), NNLS_Start(..), precomputeFromE)
+import Numeric.ActiveSet (ActiveSetConfiguration(..), defaultActiveSetConfig, EqualityConstrainedSolver(..), Logging(..), NNLS_Start(..), precomputeFromE, LSI_E)
 import qualified Control.Foldl as FL
 import qualified Data.List as L
 import qualified Data.Map.Strict as M
@@ -56,6 +57,8 @@ import qualified Frames.Transform as FT
 import qualified Numeric as Numeric
 import qualified Numeric.LinearAlgebra as LA
 import qualified Numeric.NLOPT as NLOPT
+import qualified Numeric.NNLS.LH as LH
+import Numeric.NNLS.LH ()
 import qualified Data.Vector.Storable as VS
 
 import Control.Lens (Lens', view, lens)
@@ -259,11 +262,11 @@ applyNSPWeights (AvgdDiff aM nvps) projWs pV = pV + aM LA.#> projToFull nvps pro
 type ObjectiveF = forall k . NullVectorProjections k -> LA.Vector Double -> LA.Vector Double -> LA.Vector Double -> (Double, LA.Vector Double)
 type OptimalOnSimplexF r =  forall k . ProjectionsToDiff k -> VS.Vector Double -> VS.Vector Double -> K.Sem r (VS.Vector Double)
 
-viaOptimalWeights :: K.KnitEffects r => OptimalWeightsConfig -> ObjectiveF -> OptimalOnSimplexF r
-viaOptimalWeights config objF !ptd !projWs !prodV = do
+viaOptimalWeights :: K.KnitEffects r => OptimalWeightsAlgoConfig -> OWKnitLogStyle -> ObjectiveF -> OptimalOnSimplexF r
+viaOptimalWeights algoConfig kls objF !ptd !projWs !prodV = do
   let !n = VS.sum prodV
       !pV = VS.map (/ n) prodV
-  ows <- DED.mapPE $ optimalWeights config objF (nullVectorProjections ptd) projWs pV
+  ows <- DED.mapPE $ optimalWeights algoConfig kls objF (nullVectorProjections ptd) projWs pV
   pure $ VS.map (* n) $ applyNSPWeights ptd ows pV
 
 -- alpha - alpha'
@@ -298,87 +301,118 @@ klDiv nvps projWs pV v =
 
 
 data OptimalWeightsMaxConfig = FailOnMax | ReportOnMax | SucceedOnMax
-data OptimalWeightsLogStyle = OWCLogLevel K.LogSeverity | OWCLogCategory Text K.LogSeverity
+data OWKnitLogStyle = OWKLogLevel K.LogSeverity | OWKLogCategory Text K.LogSeverity
 
-data OptimalWeightsConfig =
-  OptimalWeightsConfig { owcProbRelTolerance :: Double
-                       , owcMaxItersM :: Maybe Word
-                       , owcMaxTimeM :: Maybe Double
-                       , owcOnMax :: OptimalWeightsMaxConfig
-                       , owcLogStyle :: OptimalWeightsLogStyle
-                       }
+data OptimalWeightsAlgoConfig =
+  OptimalWeightsAlgoConfig
+  {
+    owcProbRelTolerance :: Double
+  , owcMaxItersM :: Maybe Word
+  , owcMaxTimeM :: Maybe Double
+  , owcOnMax :: OptimalWeightsMaxConfig
+  }
 
-defaultOptimalWeightsConfig :: OptimalWeightsConfig
-defaultOptimalWeightsConfig = OptimalWeightsConfig 1e-4 (Just 1000) (Just 0.001) ReportOnMax $ OWCLogCategory "OptimalWeights" (K.Debug 3)
+data OptimalWeightsConfig m =
+  OptimalWeightsConfig
+  {
+    owcAlgo :: OptimalWeightsAlgoConfig
+  , owcLog :: Text -> m ()
+  , owcThrow :: forall a . Text -> m a
+  }
 
-owLog :: DED.EnrichDataEffects r => OptimalWeightsConfig -> Text -> K.Sem r ()
-owLog cfg t = case owcLogStyle cfg of
-  OWCLogLevel ls -> K.logLE ls t
-  OWCLogCategory cat defSev -> K.logCat cat defSev t
+defaultOptimalWeightsAlgoConfig :: OptimalWeightsAlgoConfig
+defaultOptimalWeightsAlgoConfig = OptimalWeightsAlgoConfig 1e-4 (Just 1000) (Just 1) ReportOnMax
 
-optimalWeights :: DED.EnrichDataEffects r
-               => OptimalWeightsConfig
+semLog :: K.KnitEffects r => OWKnitLogStyle -> Text -> K.Sem r ()
+semLog kls ~t = case kls of
+  OWKLogLevel ls -> K.logLE ls t
+  OWKLogCategory cat defSev -> K.logCat cat defSev t
+
+semThrow :: DED.EnrichDataEffects r => Text -> K.Sem r a
+semThrow = PE.throw . DED.TableMatchingException
+
+owConfigSem ::  (DED.EnrichDataEffects r, K.KnitEffects r) => OptimalWeightsAlgoConfig -> OWKnitLogStyle -> OptimalWeightsConfig (K.Sem r)
+owConfigSem algoConfig knitLogStyle = OptimalWeightsConfig algoConfig (semLog knitLogStyle) semThrow
+
+optimalWeights :: (K.KnitEffects r, DED.EnrichDataEffects r)
+               => OptimalWeightsAlgoConfig
+               -> OWKnitLogStyle
                -> ObjectiveF
                -> NullVectorProjections k
                -> LA.Vector LA.R
                -> LA.Vector LA.R
                -> K.Sem r (LA.Vector LA.R)
-optimalWeights config objectiveF nvps projWs pV = do
---  K.logLE K.Info $ "optimalWeights: pV = " <> DED.prettyVector pV
---  K.logLE K.Info $ "optimalWeights: Initial pV + nsWs <.> nVs = " <> DED.prettyVector (pV + projToFull nvps projWs)
+optimalWeights algoConfig kls = optimalWeights' (owConfigSem algoConfig kls)
+
+optimalWeights' :: Monad m
+                => OptimalWeightsConfig m
+                -> ObjectiveF
+                -> NullVectorProjections k
+                -> LA.Vector LA.R
+                -> LA.Vector LA.R
+                -> m (LA.Vector LA.R)
+optimalWeights' config objectiveF nvps projWs pV = do
+  let log = owcLog config
+      throw = owcThrow config
+--  log $ "optimalWeights: pV = " <> DED.prettyVector pV
+--  log $ "optimalWeights: Initial pV + nsWs <.> nVs = " <> DED.prettyVector (pV + projToFull nvps projWs)
   let n = VS.length projWs
 --      prToFull = projToFull nvps
 --      scaleGradM = fullToProjM nvps LA.<> LA.tr (fullToProjM nvps)
       objD = objectiveF nvps projWs pV
 --      obj v = fst $ objD v
+{-
       constraintData =  L.zip (VS.toList pV) (LA.toRows $ projToFullM nvps)
       constraintLB :: (Double, LA.Vector LA.R)-> LA.Vector LA.R -> (Double, LA.Vector LA.R)
       constraintLB (p, projToNullC) v = (negate (p + v `LA.dot` projToNullC), negate projToNullC)
       constraintLBs = fmap constraintLB constraintData
       nlConstraintsD = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar cf) 1e-6) $ constraintLBs
---      nlConstraints = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar $ \v -> fst $ cf v) 1e-6) $ constraintLBs
-{-      constraintV v = negate $ pV + projToFull nvps v
-      constraintG = negate $ projToFullM nvps
-      vecConstraintD v _ = (constraintV v , constraintG)
-      nlvConstraintsD = [NLOPT.InequalityConstraint (NLOPT.Vector (fromIntegral $ VS.length pV) vecConstraintD) 1e-6]
 -}
+--      nlConstraints = fmap (\cf -> NLOPT.InequalityConstraint (NLOPT.Scalar $ \v -> fst $ cf v) 1e-6) $ constraintLBs
+      m = VS.length pV
+      constraintV v = negate $ pV + projToFull nvps v
+      constraintG = negate $ projToFullM nvps
+      vecConstraintD :: NLOPT.VectorConstraintD
+--      vecConstraintD v l = let il = fromIntegral l in (VS.take il $ constraintV v , LA.subMatrix (0, 0) (il, n) constraintG)
+      vecConstraintD v _ = (constraintV v , constraintG)
+      nlvConstraintsD = [NLOPT.InequalityConstraint (NLOPT.Vector (fromIntegral @_ @Word m) vecConstraintD) 1e-6]
+
       -- we don't need upper bounds because those are enforced by a constraint.
       -- sum(pV + projToFullM w) = 1. And since all (pV + projToFull w)_i >= 0
       -- we know all (pV + projToFull w)_i <= 1
-      absTol = owcProbRelTolerance config
+      absTol = owcProbRelTolerance $ owcAlgo config
       -- dV_j = sum_k B_{jk} d\alpha_k
       -- Assume d\alpha_k are iid: Var(dV_j) ~ Var(d\alpha) \sum_k B_{jk}^2
       -- d\alpha are uniform [-\eps, \eps] so Var(d\alpha) ~ \eps / \sqrt{3}
       -- \eps_\alpha = \eps/\sqrt 3 * \sum_k B_{jk}^2
       sdSumPtF = VS.fromList $ fmap (sqrt . VS.sum . VS.map (\x -> x * x)) . LA.toColumns $ projToFullM nvps
       absTolV = VS.map (\x -> absTol / (sqrt 3 * x)) sdSumPtF -- VS.fromList $ L.replicate n absTol
-  owLog config $ "absTolV = " <> DED.prettyVector absTolV
+  log $ "absTolV = " <> DED.prettyVector absTolV
   let nlStop = NLOPT.ParameterAbsoluteTolerance absTolV
-               :| (maybe [] (pure . NLOPT.MaximumEvaluations) (owcMaxItersM config)
-                  <> maybe [] (pure . NLOPT.MaximumTime) (owcMaxTimeM config)
+               :| (maybe [] (pure . NLOPT.MaximumEvaluations) (owcMaxItersM $ owcAlgo config)
+                  <> maybe [] (pure . NLOPT.MaximumTime) (owcMaxTimeM $ owcAlgo config)
                   )
-      nlAlgo = NLOPT.SLSQP objD [] nlConstraintsD [] --[nlSumToOneD]
+      nlAlgo = NLOPT.SLSQP objD [] nlvConstraintsD [] --[nlSumToOneD]
 --      nlAlgo = NLOPT.MMA objD nlConstraintsD
 --      nlAlgo = NLOPT.COBYLA obj [] nlConstraints [] Nothing
       nlProblem =  NLOPT.LocalProblem (fromIntegral n) nlStop nlAlgo
       nlSol = NLOPT.minimizeLocal nlProblem projWs
       onMax solution t =
         let maxMsg = "optimalWeights: NLOPT solver reached " <> t <> " at f=" <> show (NLOPT.solutionCost solution)
-        in case owcOnMax config of
-          FailOnMax -> PE.throw $ DED.TableMatchingException maxMsg
-          ReportOnMax -> owLog config maxMsg >> (pure $ NLOPT.solutionParams solution)
+        in case owcOnMax $ owcAlgo config of
+          FailOnMax -> throw maxMsg
+          ReportOnMax -> log maxMsg >> (pure $ NLOPT.solutionParams solution)
           SucceedOnMax -> pure $ NLOPT.solutionParams solution
   case nlSol of
-    Left result -> PE.throw $ DED.TableMatchingException  $ "minConstrained: NLOPT solver failed: " <> show result
+    Left result -> throw  $ "minConstrained: NLOPT solver failed: " <> show result
     Right solution -> case NLOPT.solutionResult solution of
       NLOPT.MAXEVAL_REACHED -> onMax solution $ "Max Iterations"
       NLOPT.MAXTIME_REACHED -> onMax solution $ "Max Time"
       _ -> do
         let !oWs = NLOPT.solutionParams solution
-        owLog config $ "f=" <> show (NLOPT.solutionCost solution) <> ";solution=" <> DED.prettyVector oWs
+        log $ "f=" <> show (NLOPT.solutionCost solution) <> ";solution=" <> DED.prettyVector oWs
 --        K.logLE K.Info $ "Solution: pV + oWs <.> nVs = " <> DED.prettyVector (pV + projToFull nvps oWs)
         pure oWs
-
 
 weightMapA :: (Double -> Double) -> LA.Vector Double -> LA.Matrix Double -> (LA.Matrix Double, [Int])
 weightMapA g pV a =
@@ -388,36 +422,35 @@ weightMapA g pV a =
       aNZ = AS.subMatrixRL nonZeroIs (LA.diag invP LA.<> a)
   in (aNZ, nonZeroIs)
 
-optimalWeightsAS :: DED.EnrichDataEffects r
-                 => AS.ActiveSetConfiguration
+optimalWeightsAS :: MonadIO m
+                 => (forall a. Text -> m a) -- throw
                  -> Maybe (Double -> Double)
-                 -> Maybe AS.LSI_E
+                 -> Maybe LH.LSI_E
                  -> NullVectorProjections k
                  -> LA.Vector LA.R
                  -> LA.Vector LA.R
-                 -> K.Sem r (LA.Vector LA.R)
-optimalWeightsAS asConfig mf mLSIE nvps projWs pV = do
+                 -> m (LA.Vector LA.R)
+optimalWeightsAS throw mf mLSIE nvps projWs pV = do
   -- convert to correct form for AS solver
   let a = projToFullM nvps
   when (LA.cols a /= LA.size projWs)
-    $ PE.throw $ DED.TableMatchingException
+    $ throw
     $ "optimalWeightAS: cols(B^\\dagger) = " <> show (LA.cols a) <> " != " <> show (LA.size pV) <> " = length(pV)"
   let (aNZ, nonZeroIs) = maybe (a, [0..(LA.rows a - 1)]) (\f -> weightMapA f pV a) mf
-      lsiE = fromMaybe (AS.Original aNZ) mLSIE
---      removeZeros =  VS.fromList . fmap snd . filter (not . (`elem` zeroIs) . fst) . zip [0..] . VS.toList
+      lsiE = fromMaybe (LH.Original aNZ) mLSIE
   let bNZ = aNZ LA.#> projWs
       pVNZ = AS.subVectorL nonZeroIs pV --removeZeros pV
       ic = AS.MatrixLower aNZ (negate pVNZ)
-  (resE, _) <- AS.optimalLSI (K.logLE K.Info) asConfig lsiE bNZ ic
+  resE <- LH.nnlsResE <$> (liftIO $ LH.optimalLSI' lsiE bNZ ic)
   case resE of
-    Left err -> PE.throw $ DED.TableMatchingException $ "ActiveSet.findOptimal: " <> err
-    Right ows -> pure ows
+    Left err -> throw $ "optimalWeightsAS (from optimalLSI): " <> err
+    Right x -> pure x
 
-viaOptimalWeightsAS :: K.KnitEffects r => Maybe (Double -> Double) -> Maybe AS.LSI_E -> OptimalOnSimplexF r
+viaOptimalWeightsAS :: K.KnitEffects r => Maybe (Double -> Double) -> Maybe LH.LSI_E -> OptimalOnSimplexF r
 viaOptimalWeightsAS mf mLSIE ptd projWs prodV = do
   let n = VS.sum prodV
       pV = VS.map (/ n) prodV
-  ows <- DED.mapPE $ optimalWeightsAS AS.defaultActiveSetConfig mf mLSIE (nullVectorProjections ptd) projWs pV
+  ows <- DED.mapPE $ optimalWeightsAS semThrow mf mLSIE (nullVectorProjections ptd) projWs pV
   pure $ VS.map (* n) $ applyNSPWeights ptd ows pV
 
 
@@ -444,8 +477,9 @@ projectToSimplex y = VS.fromList $ fmap (\x -> max 0 (x - tHat)) yL
     go 0 = t 0
     go k = let tk = t k in if tk > sY L.!! k then tk else go (k - 1)
 
-applyNSPWeightsO :: DED.EnrichDataEffects r => OptimalWeightsConfig -> ObjectiveF -> ProjectionsToDiff k -> LA.Vector LA.R -> LA.Vector LA.R -> K.Sem r (LA.Vector LA.R)
-applyNSPWeightsO config objF ptd nsWs pV = f <$> optimalWeights config objF (nullVectorProjections ptd) nsWs pV
+applyNSPWeightsO :: (K.KnitEffects r, DED.EnrichDataEffects r)
+                 => OptimalWeightsAlgoConfig -> OWKnitLogStyle -> ObjectiveF -> ProjectionsToDiff k -> LA.Vector LA.R -> LA.Vector LA.R -> K.Sem r (LA.Vector LA.R)
+applyNSPWeightsO algoConfig kls objF ptd nsWs pV = f <$> optimalWeights algoConfig kls objF (nullVectorProjections ptd) nsWs pV
   where f oWs = applyNSPWeights ptd oWs pV
 
 -- this aggregates over cells with the same given key
