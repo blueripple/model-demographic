@@ -433,9 +433,13 @@ optimalWeightsAS :: MonadIO m
 optimalWeightsAS throw mf mLSIE nvps projWs pV = do
   -- convert to correct form for AS solver
   let a = projToFullM nvps
-  when (LA.cols a /= LA.size projWs)
+      (aRows, aCols) = LA.size a
+  when (aRows /= LA.size pV)
     $ throw
-    $ "optimalWeightAS: cols(B^\\dagger) = " <> show (LA.cols a) <> " != " <> show (LA.size pV) <> " = length(pV)"
+    $ "optimalWeightAS: rows(B^\\dagger) = " <> show aRows <> " != " <> show (LA.size pV) <> " = length(product)"
+  when (aCols  /= LA.size projWs)
+    $ throw
+    $ "optimalWeightAS: cols(B^\\dagger) = " <> show aCols <> " != " <> show (LA.size projWs) <> " = length(alpha)"
   let (aNZ, nonZeroIs) = maybe (a, [0..(LA.rows a - 1)]) (\f -> weightMapA f pV a) mf
       lsiE = fromMaybe (LH.Original aNZ) mLSIE
   let bNZ = aNZ LA.#> projWs
