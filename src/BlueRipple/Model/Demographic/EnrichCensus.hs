@@ -356,11 +356,11 @@ recodeCSR = fmap F.rcast . FL.fold reFld . FL.fold cFld
              FMR.noUnpack
              (FMR.assignKeysAndData @(Key loc [DT.CitizenC, DT.SexC]))
              (FMR.makeRecsWithKey id $ FMR.ReduceFold $ const BRC.reToR5Fld)
-    cFld =  FMR.concatFold
+    cFld  =  FMR.concatFold
              $ FMR.mapReduceFold
              FMR.noUnpack
              (FMR.assignKeysAndData @(Key loc [DT.SexC, BRC.RaceEthnicityC]))
-             (FMR.makeRecsWithKey id $ FMR.ReduceFold $ const BRC.cToCFld)
+             (FMR.makeRecsWithKey id $ FMR.ReduceFold $ const BRC.cToCFld2)
 
 
 type ProductC cs as bs = (
@@ -645,7 +645,7 @@ type TableProductsOWZC ok cs as bs k1s k2s =
 
 -- input keys do not have be in the right order
 tableProductsOWZ :: forall ok cs as bs k1s k2s r .
-                    (K.KnitEffects r, BRCC.CacheEffects r
+                    (K.KnitEffects r
                     , TableProductsOWZC ok cs as bs k1s k2s
                    )
                  => DMS.DensityProduct
