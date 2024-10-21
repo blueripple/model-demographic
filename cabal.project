@@ -23,6 +23,8 @@ allow-newer: freer-simple:template-haskell
            , polysemy-zoo:bytestring
            , polysemy-zoo:ghc-prim
            , streamly-bytestring:streamly-core
+           , bytestring
+           , base
 
 flags: +streamly9
 

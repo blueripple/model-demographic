@@ -138,26 +138,33 @@ type ACSa6ModelRow =  [BRDF.Year, GT.StateAbbreviation, GT.StateFIPS, GT.PUMA] V
 --acsSource :: (K.KnitEffects r, BRK.CacheEffects r) => K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
 --acsSource = acs1Yr
 
+aCSa5 :: (K.KnitEffects r, BRK.CacheEffects r)
+  => F.FrameRec PUMS.PUMS_Typed
+  -> F.FrameRec BRL.StateXWalkR
+  -> Int
+  -> K.Sem r (F.FrameRec ACSa5ModelRow)
+aCSa5 typedACS statesXWalk year = K.wrapPrefix "aCSa5" $ do
+  let typedACSForYear = F.filterFrame ((== year) . view BRDF.year) $ typedACS
+  K.logLE K.Info $ "raw ACS has " <> show (FL.fold FL.length typedACSForYear) <> " rows. Adding state abbreviations..."
+  let (withSA, missing) = FJ.leftJoinWithMissing @'[GT.StateFIPS] typedACSForYear statesXWalk
+  when (not $ null missing) $ K.knitError $ "Missing abbreviations in cachedCSWithAbbreviations left join: " <> show missing
+  K.logLE K.Info $ "Done"
+  pure $ FST.mapMaybe (fmap F.rcast . simplifyAgeM . addEdu4 . addRace5) withSA
 
 cachedACSa5 :: (K.KnitEffects r, BRK.CacheEffects r)
   => PUMS.ACSWindow
   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
   -> Int
   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ModelRow))
-cachedACSa5 acsWindow source year = do
-  typedACS_C <- source
+cachedACSa5 acsWindow typedACS_CM year = K.wrapPrefix "cachesACSa5" $ do
+  typedACS_C <- typedACS_CM
   stateAbbrXWalk_C <- BRL.stateAbbrCrosswalkLoader
   let (PUMS.ACSWindow yrs) = acsWindow
       cacheKey = "model/demographic/data/acs" <> show yrs <> "Yr_" <> show year <> "_a5.bin"
-      typedACSForYear_C = F.filterFrame ((== year) . view BRDF.year) <$> typedACS_C
-      deps = (,) <$> typedACSForYear_C <*> stateAbbrXWalk_C
+      deps = (,) <$> typedACS_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
-    K.logLE K.Info "Cached doesn't exist or is older than dependencies. Loading raw ACS rows..."
-    K.logLE K.Info $ "raw ACS has " <> show (FL.fold FL.length acs) <> " rows. Adding state abbreviations..."
-    let (withSA, missing) = FJ.leftJoinWithMissing @'[GT.StateFIPS] acs xWalk
-    when (not $ null missing) $ K.knitError $ "Missing abbreviations in cachedCSWithAbbreviations left join: " <> show missing
-    K.logLE K.Info $ "Done"
-    pure $ FST.mapMaybe (fmap F.rcast . simplifyAgeM . addEdu4 . addRace5) withSA
+    K.logLE K.Info "Cached doesn't exist or is older than dependencies."
+    aCSa5 acs xWalk year
 
 cachedACSa6 :: (K.KnitEffects r, BRK.CacheEffects r)
   => PUMS.ACSWindow
@@ -223,6 +230,24 @@ cachedACSa6ByState acsWindow source year = K.wrapPrefix "Model.Demographic.cache
     K.logLE K.Info $ "Done"
     pure $ fmap F.rcast withSA
 
+aCSa5ByPUMA :: (K.KnitEffects r, BRK.CacheEffects r)
+            => F.FrameRec PUMS.PUMS_Typed
+            -> F.FrameRec BRL.StateXWalkR
+            -> Int
+            -> K.Sem r (F.FrameRec ACSa5ByPUMAR)
+aCSa5ByPUMA acs stateXWalk year = K.wrapPrefix "Model.Demographic.aCSa5ByPUMA" $ do
+    let acsForYear =  F.filterFrame ((== year) . view BRDF.year) acs
+    K.logLE K.Info $ "full ACS has " <> show (FL.fold FL.length acs) <> " rows."
+    let lengthACSForYear = FL.fold FL.length acsForYear
+    when (lengthACSForYear == 0) $ BRK.logFrame $ F.takeRows 100 acs
+    K.logLE K.Info $ show year <> " ACS has " <> show lengthACSForYear <> " rows. Aggregating..."
+    aggregatedACS <- K.streamlyToKnit $ acsA5ByPUMARF year acs
+    K.logLE K.Info $ "aggregated ACS (by PUMA) has " <> show (FL.fold FL.length aggregatedACS) <> " rows. Adding state abbreviations..."
+    let (withSA, missing) = FJ.leftJoinWithMissing @'[GT.StateFIPS] aggregatedACS stateXWalk
+    when (not $ null missing) $ K.knitError $ "Missing abbreviations in acsByState' left join: " <> show missing
+    K.logLE K.Info $ "Done"
+    pure $ fmap F.rcast withSA
+
 cachedACSa5ByPUMA :: (K.KnitEffects r, BRK.CacheEffects r)
                   => PUMS.ACSWindow
                   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
@@ -236,17 +261,7 @@ cachedACSa5ByPUMA acsWindow source year = K.wrapPrefix "Model.Demographic.cached
       deps = (,) <$> typedACS_C <*> stateAbbrXWalk_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, xWalk) -> do
     K.logLE K.Info "Cached doesn't exist or is older than dependencies. Loading raw ACS rows..."
-    let acsForYear =  F.filterFrame ((== year) . view BRDF.year) acs
-    K.logLE K.Info $ "full ACS has " <> show (FL.fold FL.length acs) <> " rows."
-    let lengthACSForYear = FL.fold FL.length acsForYear
-    when (lengthACSForYear == 0) $ BRK.logFrame $ F.takeRows 100 acs
-    K.logLE K.Info $ show year <> " ACS has " <> show lengthACSForYear <> " rows. Aggregating..."
-    aggregatedACS <- K.streamlyToKnit $ acsA5ByPUMARF year acs
-    K.logLE K.Info $ "aggregated ACS (by PUMA) has " <> show (FL.fold FL.length aggregatedACS) <> " rows. Adding state abbreviations..."
-    let (withSA, missing) = FJ.leftJoinWithMissing @'[GT.StateFIPS] aggregatedACS xWalk
-    when (not $ null missing) $ K.knitError $ "Missing abbreviations in acsByState' left join: " <> show missing
-    K.logLE K.Info $ "Done"
-    pure $ fmap F.rcast withSA
+    aCSa5ByPUMA acs xWalk year
 
 cachedACSa6ByPUMA :: (K.KnitEffects r, BRK.CacheEffects r)
                   => PUMS.ACSWindow
@@ -275,6 +290,37 @@ type CDFromPUMARow ks = [BRDF.Year, GT.StateAbbreviation, GT.StateFIPS, GT.Congr
 type PUMAJoinKey = [BRDF.Year, GT.StateAbbreviation, GT.StateFIPS, GT.PUMA]
 type XRow ks = (ks V.++ DatFieldsTo) V.++ [GT.CongressionalDistrict, BRDF.Population, BRDF.FracCDInPUMA, BRDF.FracPUMAInCD]
 
+pUMAsToCDs :: forall ks r .
+                    (FS.RecFlat (ks V.++ DatFieldsTo)
+                    , FJ.CanLeftJoinM PUMAJoinKey (PUMAToCDRow ks) BR.DatedCDFromPUMA2012
+                    , FSI.RecVec (ks V.++ DatFieldsTo)
+                    , V.RMap (ks V.++ DatFieldsTo)
+                    , Ord (F.Record ks)
+                    , ks F.⊆ (PUMAJoinKey V.++ XRow ks)
+                    , F.ElemOf (XRow ks) GT.CongressionalDistrict
+                    , F.ElemOf (XRow ks) BRDF.FracPUMAInCD
+                    , F.ElemOf (XRow ks) DT.PopCount
+                    , F.ElemOf (XRow ks) DT.PWPopPerSqMile
+                    , K.KnitEffects r
+                    , BRK.CacheEffects r
+                    )
+           => F.FrameRec BRL.DatedCDFromPUMA2012
+           -> F.FrameRec (PUMAToCDRow ks)
+           -> K.Sem r (F.FrameRec (CDFromPUMARow ks))
+pUMAsToCDs cdFromPUMA byPUMAs = K.wrapPrefix "Model.Demographic.pUMAsToCDs" $ do
+  K.logLE K.Info $ "byPUMAs has " <> show (FL.fold FL.length byPUMAs) <> " rows. Joining with CD weights..."
+  let (byPUMAWithCDAndWeight, missing) = FJ.leftJoinWithMissing @PUMAJoinKey byPUMAs cdFromPUMA
+  when (not $ null missing) $ K.knitError $ "Missing PUMAs in cachedPUMAsToCD left join: " <> show missing
+  aggregated <-
+    K.streamlyToKnit
+    $ BRF.frameCompactMR
+    FMR.noUnpack
+    (FMR.assignKeysAndData @([BRDF.Year, GT.StateAbbreviation, GT.StateFIPS, GT.CongressionalDistrict] V.++ ks)  @(BRDF.FracPUMAInCD ': DatFieldsTo))
+    pumaToCDFld
+    byPUMAWithCDAndWeight
+  K.logLE K.Info $ "aggregated (by PUMA) has " <> show (FL.fold FL.length aggregated)
+  pure aggregated
+
 cachedPUMAsToCDs :: forall ks r .
                     (FS.RecFlat (ks V.++ DatFieldsTo)
                     , FJ.CanLeftJoinM PUMAJoinKey (PUMAToCDRow ks) BR.DatedCDFromPUMA2012
@@ -294,22 +340,10 @@ cachedPUMAsToCDs :: forall ks r .
                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (CDFromPUMARow ks)))
 cachedPUMAsToCDs cacheKey byPUMAs_C = do
   cdFromPUMA_C <- BR.allCDFromPUMA2012Loader
---  K.ignoreCacheTime cdFromPUMA_C >>= BRK.logFrame . F.filterFrame ((== 2022) . view BRDF.year)
   let deps = (,) <$> byPUMAs_C <*> cdFromPUMA_C
   BRK.retrieveOrMakeFrame cacheKey deps $ \(byPUMAs, cdFromPUMA) -> do
     K.logLE K.Info $ "cachedPUMAsToCDs (" <> cacheKey <> "): Cached doesn't exist or is older than dependencies. Loading byPUMAs rows..."
-    K.logLE K.Info $ "byPUMAs (" <> cacheKey <> ") has " <> show (FL.fold FL.length byPUMAs) <> " rows. Joining with CD weights..."
-    let (byPUMAWithCDAndWeight, missing) = FJ.leftJoinWithMissing @PUMAJoinKey byPUMAs cdFromPUMA
-    when (not $ null missing) $ K.knitError $ "Missing PUMAs in cachedPUMAsToCD left join: " <> show missing
-    aggregated <-
-      K.streamlyToKnit
-      $ BRF.frameCompactMR
-      FMR.noUnpack
-      (FMR.assignKeysAndData @([BRDF.Year, GT.StateAbbreviation, GT.StateFIPS, GT.CongressionalDistrict] V.++ ks)  @(BRDF.FracPUMAInCD ': DatFieldsTo))
-      pumaToCDFld
-      byPUMAWithCDAndWeight
-    K.logLE K.Info $ "aggregated (by PUMA) has " <> show (FL.fold FL.length aggregated)
-    pure aggregated
+    pUMAsToCDs @ks cdFromPUMA byPUMAs
 
 pumaToCDFld :: FL.Fold (F.Record ((BRDF.FracPUMAInCD ': DatFieldsTo))) (F.Record DatFieldsTo)
 pumaToCDFld =
@@ -321,6 +355,20 @@ pumaToCDFld =
       densityFld = FL.premap (\r -> (wgtdPpl r, density r)) PUMS.wgtdDensityF
   in (\pc d -> pc F.&: d F.&: V.RNil) <$> countFld <*> densityFld
 
+aCSa5ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
+          => F.FrameRec BRL.DatedCDFromPUMA2012
+          -> F.FrameRec BRL.StateXWalkR
+          -> F.FrameRec PUMS.PUMS_Typed
+          -> Int
+          -> Maybe Int
+          -> K.Sem r (F.FrameRec ACSa5ByCDR)
+aCSa5ByCD cdFromPUMA stateXWalk typedACS year cdYearM = K.wrapPrefix "Model.Demographic.aCSa5ByCD" $ do
+  acsByPUMA <- aCSa5ByPUMA typedACS stateXWalk year
+  let adjCDYear = case cdYearM of
+        Nothing -> id
+        Just y -> over BRDF.year (const y)
+  pUMAsToCDs @CategoricalsA5 cdFromPUMA $ fmap adjCDYear $  F.filterFrame ((== year) . view BRDF.year) acsByPUMA
+
 cachedACSa5ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
                 => PUMS.ACSWindow
                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
@@ -328,14 +376,14 @@ cachedACSa5ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
                 -> Maybe Int
                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ByCDR))
 cachedACSa5ByCD acsWindow source year cdYearM = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
-  acsByPUMA_C <- cachedACSa5ByPUMA acsWindow source year
-  let adjCDYear = case cdYearM of
-        Nothing -> id
-        Just y -> over BRDF.year (const y)
+  typedACS_C <- source
+  cdFromPUMA_C <- BR.allCDFromPUMA2012Loader
+  stateXWalk_C <- BRL.stateAbbrCrosswalkLoader
+  let deps = (,,) <$> typedACS_C <*> cdFromPUMA_C <*> stateXWalk_C
       cacheKey = case cdYearM of
         Nothing -> "model/demographic/data/acs" <> show year <> "ByCD_a5.bin"
         Just y -> "model/demographic/data/acs" <> show year <> "ByCD" <> show y <> "_a5.bin"
-  cachedPUMAsToCDs @CategoricalsA5 cacheKey $ fmap (fmap adjCDYear) acsByPUMA_C
+  BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, cdFromPUMA, stateXWalk) -> aCSa5ByCD cdFromPUMA stateXWalk acs year cdYearM
 
 cachedACSa6ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
                 => PUMS.ACSWindow
