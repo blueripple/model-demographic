@@ -54,6 +54,12 @@ import qualified Data.Vinyl.TypeLevel as V
 
 import Control.Lens (view)
 
+import qualified Stan as S
+import qualified Stan.BuildingBlocks as SBB (rowLength)
+import Stan (TypedList(..))
+import Stan.Operators
+
+{-
 import qualified Stan.ModelBuilder as SMB
 import qualified Stan.ModelRunner as SMR
 import qualified Stan.ModelConfig as SC
@@ -69,6 +75,7 @@ import qualified Stan.ModelBuilder.TypedExpressions.Indexing as TEI
 import qualified Stan.ModelBuilder.TypedExpressions.DAG as DAG
 import qualified Stan.ModelBuilder.TypedExpressions.StanFunctions as SF
 import Stan.ModelBuilder.TypedExpressions.TypedList (TypedList(..))
+-}
 import qualified Flat
 
 data PopAndDensity = PopAndDensity { pop :: Int, pwDensity :: Double}
@@ -94,6 +101,9 @@ marginalFld catKeyF mKeyF datF =
 
 data DataRow rs = DataRow (F.Record rs) [Int]
 deriving instance (Show (F.Record rs)) => Show (DataRow rs)
+
+--type instance S.DataSource S.ModelDataT = [DataRows] --F.Frame FB_Result
+--type instance S.DataSource S.GQDataT = () --F.Frame FB_Matchup
 
 makeRowFromPD :: F.Record cs -> [PopAndDensity] -> DataRow (cs V.++ '[DT.PWPopPerSqMile])
 makeRowFromPD catR dats = DataRow (catR F.<+> FT.recordSingleton @DT.PWPopPerSqMile pwd) (fmap pop dats) where
@@ -127,6 +137,8 @@ instance (V.RMap rs, FS.RecFlat rs) => Flat.Flat (DataRow rs) where
   decode = fmap (\(sr, ms) -> DataRow (FS.fromS sr) ms) Flat.decode
 
 type DataRows rs = [DataRow rs]
+type DataRTT rs = S.RowTypeTag (DataRows rs) (DataRow rs)
+
 --deriving anyclass instance (Flat.Flat (ProjDataRow rs)) => Flat.Flat (ProjData rs)
 {-
 --Figure out results section once we see if this model is well-behaved
@@ -179,7 +191,7 @@ betaModelText (BetaHierNonCentered cs) = "BHNC_" <> covarianceText cs
 data ModelConfig alphaK (pd :: Type -> Type) where
   ModelConfig :: ({-Traversable pd-})
               => { nCounts :: Int
-                 , alphaDMR :: DM.DesignMatrixRow alphaK
+                 , alphaDMR :: S.DesignMatrixRow alphaK
 --                 , predDMR :: DM.DesignMatrixRow (pd Double)
                  , betaModel :: BetaModel
                  , betaLastAsZero :: Bool
@@ -197,47 +209,49 @@ dataText :: ModelConfig alphaK md -> Text
 dataText mc = mc.alphaDMR.dmName
 --              <> "_" <> mc.predDMR.dmName
 
-stateG :: SMB.GroupTypeTag Text
-stateG = SMB.GroupTypeTag "State"
+stateG :: S.GroupTypeTag Text
+stateG = S.GroupTypeTag "State"
 
 stateGroupBuilder :: (Foldable f, Typeable rs)
-                  => (F.Record rs -> Text) -> f Text -> SMB.StanGroupBuilderM (DataRows rs) () ()
+                  => (F.Record rs -> Text) -> f Text -> S.StanDataBuilderEff S.ModelDataT (DataRows rs) (DataRTT rs)
 stateGroupBuilder saF states = do
-  projData <- SMB.addModelDataToGroupBuilder "CountData" (SMB.ToFoldable id)
-  SMB.addGroupIndexForData stateG projData $ SMB.makeIndexFromFoldable show (saF . dataRowRec) states
-  SMB.addGroupIntMapForDataSet stateG projData $ SMB.dataToIntMapFromFoldable (saF . dataRowRec) states
+  dataSetTag <- S.addData "CountData" S.ModelDataT (S.ToFoldable id)
+  S.addGroupIndexForData stateG dataSetTag $ S.makeIndexFromFoldable show (saF . dataRowRec) states
+  S.addGroupIntMapForData stateG dataSetTag $ S.dataToIntMapFromFoldable (saF . dataRowRec) states
+  pure dataSetTag
 
-data ModelData r =
+data ModelData rs =
   ModelData
   {
-    dataTag :: SMB.RowTypeTag (DataRow r)
-  , nCatsE :: TE.IntE
-  , countsE :: TE.ArrayE (TE.EArray1 TE.EInt)
-  , nCovariatesE :: TE.IntE
-  , covariatesE :: TE.MatrixE
+    dataTag :: S.RowTypeTag (DataRows rs) (DataRow rs)
+  , nCatsE :: S.IntE
+  , countsE :: S.ArrayE (S.EArray1 S.EInt)
+  , nCovariatesE :: S.IntE
+  , covariatesE :: S.MatrixE
 --  , nPredictorsE :: TE.IntE
 --  , predictorsE :: TE.MatrixE
   }
 
 --TODO: add predictors to alphas to make one matrix of covariates
 modelData :: forall pd alphaK rs . (Typeable rs)
-          =>  ModelConfig alphaK pd
+          => ModelConfig alphaK pd
+          -> S.RowTypeTag (DataRows rs) (DataRow rs)
           -> (F.Record rs -> alphaK)
           -> (F.Record rs -> pd Double)
-          -> SMB.StanBuilderM (DataRows rs) () (ModelData rs)
-modelData mc catKey _predF = do
-  dat <- SMB.dataSetTag @(DataRow rs) SC.ModelData "CountData"
-  (countsE', nCatsE') <- SBB.addArrayOfIntArrays dat "MCounts" Nothing mc.nCounts dataRowCounts (Just 0) Nothing
-  let (_, nCovariatesE') = DM.designMatrixColDimBinding mc.alphaDMR Nothing
-  covariatesDME <- if DM.rowLength mc.alphaDMR > 0
-                   then DM.addDesignMatrix dat (contramap (catKey . dataRowRec) mc.alphaDMR) Nothing
-                   else pure $ TE.namedE "ERROR" TE.SMat -- this shouldn't show up in stan code at all
+          -> S.StanModelBuilderEff (DataRows rs) () (ModelData rs)
+modelData mc dataSetTag catKey _predF = do
+--  dat <- S.dataSetTag @(DataRow rs) SC.ModelData "CountData"
+  (countsE', nCatsE') <- S.addArrayOfIntArrays @S.ModelDataT dataSetTag "MCounts" Nothing mc.nCounts dataRowCounts (Just 0) Nothing
+  let (_, nCovariatesE') = S.designMatrixColDimBinding mc.alphaDMR Nothing
+  covariatesDME <- if SBB.rowLength mc.alphaDMR > 0
+                   then S.addDesignMatrix @S.ModelDataT dataSetTag (contramap (catKey . dataRowRec) mc.alphaDMR) Nothing
+                   else pure $ S.namedE "ERROR" S.SMat -- this shouldn't show up in stan code at all
 {-  let (_, nPredictorsE') = DM.designMatrixColDimBinding mc.predDMR Nothing
   dmE <- if DM.rowLength mc.predDMR > 0
          then DM.addDesignMatrix dat (contramap (predF . projRowRec) mc.predDMR) Nothing
          else pure $ TE.namedE "ERROR" TE.SMat -- this shouldn't show up in stan code at all
 -}
-  pure $ ModelData dat nCatsE' countsE' nCovariatesE' covariatesDME --nPredictorsE' dmE
+  pure $ ModelData dataSetTag nCatsE' countsE' nCovariatesE' covariatesDME --nPredictorsE' dmE
 
 -- S states
 -- K categories to count
@@ -245,44 +259,44 @@ modelData mc catKey _predF = do
 -- D predictors. 0 for now.
 -- M is number of one-hot encoded alphas
 -- M x K matrix or S array of M x K matrix. M=Number of cols is < 1 + C + D since we binary or one-hot encode all the categories
-data Beta = SimpleBeta (DAG.Parameter TE.EMat) | HierarchicalBeta (DAG.Parameter (TE.EArray1 TE.EMat))
+data Beta = SimpleBeta (S.Parameter S.EMat) | HierarchicalBeta (S.Parameter (S.EArray1 S.EMat))
 
 data ModelParameters where
   ModelParameters :: Beta -> ModelParameters
 
-modelBeta :: ModelConfig alphaK pd -> ModelData rs -> SMB.StanBuilderM (DataRows rs) () Beta
+modelBeta :: ModelConfig alphaK pd -> ModelData rs -> S.StanModelBuilderEff (DataRows rs) () Beta
 modelBeta mc pmd = do
-  let nStatesE = SMB.groupSizeE stateG
-      toVector x = TE.functionE SF.to_vector (x :> TNil)
-      betaColsE = if mc.betaLastAsZero then pmd.nCatsE `TE.minusE` TE.intE 1 else pmd.nCatsE
+  let nStatesE = S.groupSizeE stateG
+--      toVector x = S.to_vector (x :> TNil)
+      betaColsE = if mc.betaLastAsZero then pmd.nCatsE |-| S.intE 1 else pmd.nCatsE
       betaName = if mc.betaLastAsZero then "betaR" else "beta"
-      betaShape = TE.matrixSpec pmd.nCovariatesE betaColsE
-      hierBetaSpec =  TE.array1Spec nStatesE $ betaShape []
-      hierBetaPs :: SMB.StanBuilderM (DataRows rs) () (DAG.Parameters [TE.EMat, TE.EMat])
+      betaShape = S.matrixSpec pmd.nCovariatesE betaColsE
+      hierBetaSpec =  S.array1Spec nStatesE betaShape
+      hierBetaPs :: S.StanModelBuilderEff (DataRows rs) () (S.Parameters [S.EMat, S.EMat])
       hierBetaPs = do
-        muBetaP <- DAG.addBuildParameter
-                    $ DAG.UntransformedP
-                    (TE.NamedDeclSpec ("mu" <> betaName) $ betaShape [])
+        muBetaP <- S.addBuildParameter
+                    $ S.UntransformedP
+                    (S.NamedDeclSpec ("mu" <> betaName) betaShape)
                     [] TNil
-                    (\_ p -> TE.addStmt $ TE.sample (toVector p) SF.std_normal TNil)
+                    (\_ p -> S.addStmt $ S.sample (S.to_vector p) S.std_normal TNil)
 
-        tauBetaP <- DAG.addBuildParameter
-                     $ DAG.UntransformedP
-                     (TE.NamedDeclSpec ("tau" <> betaName) $ betaShape [TE.lowerM $ TE.realE 0])
+        tauBetaP <- S.addBuildParameter
+                     $ S.UntransformedP
+                     (S.NamedDeclSpec ("tau" <> betaName) $ S.addVMs (S.Modifiers [S.lowerM $ S.realE 0]) betaShape)
                      [] TNil
-                     (\_ p -> TE.addStmt $ TE.sample (toVector p) SF.std_normal TNil)
+                     (\_ p -> S.addStmt $ S.sample (S.to_vector p) S.std_normal TNil)
         pure (muBetaP :> tauBetaP :> TNil)
       betaHier cs cent = do
         hierPs <- hierBetaPs
         case hierPs of
           (muBetaP :> tauBetaP :> TNil) -> do
-            muBetaAP <- DAG.addBuildParameter
-                       $ DAG.TransformedP
-                       (TE.NamedDeclSpec ("mu" <> betaName <> "A") $ TE.array1Spec nStatesE $ betaShape [])
+            muBetaAP <- S.addBuildParameter
+                       $ S.TransformedP
+                       (S.NamedDeclSpec ("mu" <> betaName <> "A") $ S.array1Spec nStatesE betaShape)
                        []
                        (muBetaP :> TNil)
-                       DAG.TransformedParametersBlock
-                       (\(muBetaE :> TNil) -> DAG.DeclRHS $ TE.functionE SF.rep_array (muBetaE :> (nStatesE :> TNil)))
+                       S.TransformedParametersBlock
+                       (\(muBetaE :> TNil) -> S.DeclRHS $ S.rep_array1 muBetaE nStatesE)
                        TNil
                        (\_ _ -> pure ())
 
@@ -295,48 +309,48 @@ modelBeta mc pmd = do
             case cs of
               DiagonalCovariance -> do
                 fmap HierarchicalBeta
-                  $ SBC.matrixMultiNormalParameter' SBC.Diagonal cent muBetaAP tauBetaP
-                  (TE.NamedDeclSpec betaName $ hierBetaSpec)
+                  $ S.matrixMultiNormalParameter' S.Diagonal cent muBetaAP tauBetaP
+                  (S.NamedDeclSpec betaName $ hierBetaSpec)
               LKJCovariance lkjPriorP -> do
-                lkjCorrBetaP <- DAG.simpleParameter
-                                (TE.NamedDeclSpec ("lkj" <> betaName)
-                                 $ TE.choleskyFactorCorrSpec (pmd.nCovariatesE `TE.timesE` betaColsE) [])
-                                (DAG.given (TE.realE $ realToFrac lkjPriorP) :> TNil)
-                                SF.lkj_corr_cholesky
+                lkjCorrBetaP <- S.simpleParameter
+                                (S.NamedDeclSpec ("lkj" <> betaName)
+                                 $ S.choleskyFactorCorrSpec (pmd.nCovariatesE |*| betaColsE))
+                                (S.given (S.realE $ realToFrac lkjPriorP) :> TNil)
+                                S.lkj_corr_cholesky
                 fmap HierarchicalBeta
-                  $ SBC.matrixMultiNormalParameter' (SBC.Cholesky lkjCorrBetaP) cent muBetaAP tauBetaP
-                  (TE.NamedDeclSpec betaName $ hierBetaSpec)
+                  $ S.matrixMultiNormalParameter' (S.Cholesky lkjCorrBetaP) cent muBetaAP tauBetaP
+                  (S.NamedDeclSpec betaName $ hierBetaSpec)
 --          _ -> SMB.stanBuildError "BLCorrModel.modelBeta: Pattern match error in hierarchical beta paramters. Yikes."
   betaRawP <- case mc.betaModel of
     BetaSimple -> fmap SimpleBeta
-                  $ DAG.addBuildParameter
-                  $ DAG.UntransformedP (TE.NamedDeclSpec betaName $ TE.matrixSpec pmd.nCovariatesE betaColsE [])
-                  [] TNil (\_ muM -> TE.addStmt $ TE.sample (toVector muM) SF.std_normal TNil)
-    BetaHierCentered cs -> betaHier cs SBC.Centered
-    BetaHierNonCentered cs -> betaHier cs SBC.NonCentered
+                  $ S.addBuildParameter
+                  $ S.UntransformedP (S.NamedDeclSpec betaName $ S.matrixSpec pmd.nCovariatesE betaColsE)
+                  [] TNil (\_ muM -> S.addStmt $ S.sample (S.to_vector muM) S.std_normal TNil)
+    BetaHierCentered cs -> betaHier cs S.Centered
+    BetaHierNonCentered cs -> betaHier cs S.NonCentered
   case  mc.betaLastAsZero of
     False -> pure betaRawP
     True -> do
-      let fullBetaShape = TE.matrixSpec pmd.nCovariatesE pmd.nCatsE
-          zeroCol = TE.functionE SF.rep_vector (TE.realE 0 :> pmd.nCovariatesE :> TNil)
-          appendZeroCol m = TE.functionE SF.append_col (m :> zeroCol :> TNil)
+      let fullBetaShape = S.matrixSpec pmd.nCovariatesE pmd.nCatsE
+          zeroCol = S.rep_vector (S.realE 0) pmd.nCovariatesE
+          appendZeroCol m = S.append_col m zeroCol
       case betaRawP of
         SimpleBeta brP ->
           fmap SimpleBeta
-          $ DAG.addBuildParameter
-          $ DAG.TransformedP (TE.NamedDeclSpec "beta" $ fullBetaShape []) []
-          (brP :> TNil) DAG.TransformedParametersBlock
-          (\(br :> TNil) -> DAG.DeclRHS $ appendZeroCol br)
+          $ S.addBuildParameter
+          $ S.TransformedP (S.NamedDeclSpec "beta" $ fullBetaShape) []
+          (brP :> TNil) S.TransformedParametersBlock
+          (\(br :> TNil) -> S.DeclRHS $ appendZeroCol br)
           TNil
           (\_ _ -> pure ())
         HierarchicalBeta brP ->
           fmap HierarchicalBeta
-          $ DAG.addBuildParameter
-          $ DAG.TransformedP (TE.NamedDeclSpec "beta" $ TE.array1Spec nStatesE $ fullBetaShape []) []
-          (brP :> TNil) DAG.TransformedParametersBlock
-          (\(br :> TNil) -> DAG.DeclCodeF
-            $ \b -> TE.addStmt $ TE.loopSized nStatesE "s"
-                    $ \ns -> [b `TE.at` ns `TE.assign` appendZeroCol (br `TE.at` ns)])
+          $ S.addBuildParameter
+          $ S.TransformedP (S.NamedDeclSpec "beta" $ S.array1Spec nStatesE $ fullBetaShape) []
+          (brP :> TNil) S.TransformedParametersBlock
+          (\(br :> TNil) -> S.DeclCodeF
+            $ \b -> S.addStmt $ S.loopSized nStatesE "s"
+                    $ \ns -> b !! ns S.|=| appendZeroCol (br !! ns))
           TNil
           (\_ _ -> pure ())
 
@@ -347,92 +361,93 @@ projModel :: Typeable rs
           -> (F.Record rs -> alphaK)
           -> (F.Record rs -> pd Double)
           -> ModelConfig alphaK pd
-          -> SMB.StanBuilderM  (DataRows rs) () ()
-projModel rc alphaKeyF predF mc = do
-  mData <- modelData mc alphaKeyF predF
-  let nRowsE = SMB.dataSetSizeE mData.dataTag
+          -> DataRTT rs
+          -> S.StanModelBuilderEff  (DataRows rs) () ()
+projModel rc alphaKeyF predF mc dataRtt = do
+  mData <- modelData mc dataRtt alphaKeyF predF
+  let nRowsE = S.dataSetSizeE mData.dataTag
   -- transformed data
-  totalCountE <- SMB.inBlock SMB.SBTransformedDataGQ $ SMB.addFromCodeWriter $ do
-    tc <- TE.declareNW
-      (TE.NamedDeclSpec "TCount" $ TE.array1Spec nRowsE $ TE.intSpec [TE.lowerM $ TE.intE 0])
-    TE.addStmt $ TE.loopSized nRowsE "n" $ \n -> [(tc `TE.at` n) `TE.assign` (TE.functionE SF.sumInt (mData.countsE `TE.at` n :> TNil))]
+  totalCountE <- S.inBlock S.SBTransformedDataGQ $ S.addFromCodeWriter $ do
+    tc <- S.declareNW
+      (S.NamedDeclSpec "TCount" $ S.array1Spec nRowsE $ S.addVMs (S.Modifiers [S.lowerM $ S.intE 0]) S.intSpec)
+    S.addStmt $ S.loopSized nRowsE "n" $ \n -> (tc !! n) S.|=| S.sumInt (mData.countsE !! n)
     pure tc
   betaP <- modelBeta mc mData
-  let reIndexByState = TE.indexE TEI.s0 (SMB.byGroupIndexE mData.dataTag stateG)
-      betaByRow :: TE.IntE -> TE.MatrixE
+  let reIndexByState = S.indexE S.s0 (S.dataByGroupIndexE mData.dataTag stateG)
+      betaByRow :: S.IntE -> S.MatrixE
       betaByRow ie = case betaP of
-          SimpleBeta m ->  DAG.parameterExpr m
-          HierarchicalBeta betaByState -> reIndexByState (DAG.parameterExpr betaByState) `TE.at` ie
-      mnArgByRowE nE = TE.transposeE $ (mData.covariatesE `TE.at` nE) `TE.timesE` betaByRow nE
+          SimpleBeta m ->  S.parameterExpr m
+          HierarchicalBeta betaByState -> reIndexByState (S.parameterExpr betaByState) !! ie
+      mnArgByRowE nE = S.transposeE $ (mData.covariatesE !! nE) |*| betaByRow nE
 
 
   case mc.dirichletPrior of
     False -> do
-      SMB.inBlock SMB.SBModel
-        $ SMB.addFromCodeWriter
-        $ TE.addStmt
-        $ TE.loopSized nRowsE "n"
-        $ \nE -> [TE.target $ TE.densityE SF.multinomial_logit_lpmf (mData.countsE `TE.at` nE) (mnArgByRowE nE :> TNil)]
+      S.inBlock S.SBModel
+        $ S.addFromCodeWriter
+        $ S.addStmt
+        $ S.loopSized nRowsE "n"
+        $ \nE -> S.target $ S.densityE S.multinomial_logit_lpmf (mData.countsE !! nE) (mnArgByRowE nE :> TNil)
 
       case rc.rcIncludePPCheck of
         Just nChoices -> do
-          let ppCheck n = SMB.inBlock SMB.SBGeneratedQuantities
-                          $ SBB.generatePosteriorPrediction'
+          let ppCheck n = S.inBlock S.SBGeneratedQuantities
+                          $ S.generatePosteriorPrediction'
                           mData.dataTag
-                          (TE.NamedDeclSpec "ppCounts"
-                           $ TE.array1Spec nRowsE (TE.intSpec [])
+                          (S.NamedDeclSpec "ppCounts"
+                           $ S.array1Spec nRowsE S.intSpec
                           )
-                          (\f nE -> (TE.functionE SF.multinomial_logit_rng (mnArgByRowE nE :> f nE)) `TE.at` TE.intE n)
-                          (pure $ \nE -> totalCountE `TE.at` nE :> TNil)
+                          (\f nE -> (S.functionE S.multinomial_logit_rngF (mnArgByRowE nE :> f nE)) !! S.intE n)
+                          (pure $ \nE -> totalCountE !! nE :> TNil)
                           (const id)
           mapM_ ppCheck [1..nChoices]
         Nothing -> pure ()
       when rc.rcIncludeLL
-        $ SBB.generateLogLikelihood
+        $ S.generateLogLikelihood
         mData.dataTag
-        SD.multinomialLogitDist
+        S.multinomialLogitDist
         (pure $ \nE -> mnArgByRowE nE :> TNil)
-        (pure $ \nE -> mData.countsE `TE.at` nE)
+        (pure $ \nE -> mData.countsE !! nE)
 
     True -> do
-      (dirichlet_multinomial, dirichlet_multinomial_lpmf, dirichlet_multinomial_rng) <- SBDM.dirichletMultinomial @_ @TE.ECVec
-      let softmax x = TE.functionE SF.softmax (x :> TNil)
-      dPrecE <- fmap DAG.parameterExpr
-                $ DAG.addBuildParameter
-                $ DAG.UntransformedP
-                (TE.NamedDeclSpec "dPrec" $ TE.realSpec [TE.lowerM $ TE.realE 0]) [] TNil
-                (\_ dp -> TE.addStmt $ TE.sample dp SF.normal (TE.realE 5 :> TE.realE 25 :> TNil))
-      let dmArgByRowE nE = dPrecE `TE.timesE` softmax (mnArgByRowE nE)
-      SMB.inBlock SMB.SBModel
-        $ SMB.addFromCodeWriter
-        $ TE.addStmt
-        $ TE.loopSized nRowsE "n"
-        $ \nE -> TE.writerL'
+      (dirichlet_multinomial, dirichlet_multinomial_lpmf, dirichlet_multinomial_rngF, _) <- S.dirichletMultinomial @_ @S.ECVec
+--      let softmax x = TE.functionE SF.softmax (x :> TNil)
+      dPrecE <- fmap S.parameterExpr
+                $ S.addBuildParameter
+                $ S.UntransformedP
+                (S.NamedDeclSpec "dPrec" $ S.addVMs (S.Modifiers [S.lowerM $ S.realE 0]) S.realSpec)  [] TNil
+                (\_ dp -> S.addStmt $ S.sample dp S.normal (S.realE 5 :> S.realE 25 :> TNil))
+      let dmArgByRowE nE = dPrecE |*| S.softmax (mnArgByRowE nE)
+      S.inBlock S.SBModel
+        $ S.addFromCodeWriter
+        $ S.addStmt
+        $ S.loopSized nRowsE "n"
+        $ \nE -> S.cwStmt_
                  $ (do
-                       TE.addStmt $ TE.sample (mData.countsE `TE.at` nE) dirichlet_multinomial (dmArgByRowE nE :> TNil)
+                       S.addStmt $ S.sample (mData.countsE !! nE) dirichlet_multinomial (dmArgByRowE nE :> TNil)
                    )
       case  rc.rcIncludePPCheck of
         Just nChoices -> do
-          let ppCheck n = SMB.inBlock SMB.SBGeneratedQuantities
-                          $ SBB.generatePosteriorPrediction'
+          let ppCheck n = S.inBlock S.SBGeneratedQuantities
+                          $ S.generatePosteriorPrediction'
                           mData.dataTag
-                          (TE.NamedDeclSpec ("ppCounts_" <> show n)
-                           $ TE.array1Spec nRowsE (TE.intSpec [])
+                          (S.NamedDeclSpec ("ppCounts_" <> show n)
+                           $ S.array1Spec nRowsE S.intSpec
                           )
-                          (\f nE -> (TE.functionE dirichlet_multinomial_rng (dmArgByRowE nE :> f nE)) `TE.at` TE.intE n)
-                          (pure $ \nE -> totalCountE `TE.at` nE :> TNil)
+                          (\f nE -> (S.functionE dirichlet_multinomial_rngF (dmArgByRowE nE :> f nE)) !! S.intE n)
+                          (pure $ \nE -> totalCountE !! nE :> TNil)
                           (const id)
           mapM_ ppCheck [1..nChoices]
         Nothing -> pure ()
       when rc.rcIncludeLL
-        $ SBB.generateLogLikelihood'
-        $ SBB.addToLLSet mData.dataTag
-        (SBB.LLDetails
-         (TE.densityE dirichlet_multinomial_lpmf)
+        $ S.generateLogLikelihood'
+        $ S.addToLLSet mData.dataTag
+        (S.LLDetails
+         (S.densityE dirichlet_multinomial_lpmf)
          (pure $ \nE -> dmArgByRowE nE :> TNil)
-         (pure $ \nE -> mData.countsE `TE.at` nE)
+         (pure $ \nE -> mData.countsE !! nE)
         )
-        SBB.emptyLLSet
+        S.emptyLLSet
 
 
 -- rs is stateAbbr ++ kP ++ PWPopPerSqMile
@@ -466,10 +481,10 @@ runProjModel clearCaches rc mc margKeyF _predKeyF predF = do
       dataName = "blCorrData_" <> dataText mc <> maybe "" fst rc.statesM
       countF r = PopAndDensity (view DT.popCount r) (view DT.pWPopPerSqMile r)
   stanDir <- K.liftKnit MST.stanDir >>= K.knitMaybe "runModel: empty stanDir!" . BRCC.insureFinalSlash
-  let runnerInputNames = SC.RunnerInputNames
+  let runnerInputNames = S.RunnerInputNames
                          (stanDir <> "demographic/blCorrModel")
                          (modelText mc)
-                         (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
+                         (Just $ S.GQNames "pp" dataName) -- posterior prediction vars to wrap
                          dataName
       statesFilter = maybe id (\(_, sts) -> F.filterFrame ((`elem` sts) . view GT.stateAbbreviation)) rc.statesM
       (srcWindow, cachedSrc) = ACS.acs1Yr2012_21
@@ -486,27 +501,28 @@ runProjModel clearCaches rc mc margKeyF _predKeyF predF = do
 --                         K.logLE K.Info $ "counted: " <> show counted
                          pure counted
   states <-  FL.fold (FL.premap (view GT.stateAbbreviation) FL.set) <$> K.ignoreCacheTime acsByPUMA_C
-  (dw, code) <-  SMR.dataWranglerAndCode acsCountedByPUMA_C (pure ())
-                (stateGroupBuilder (view GT.stateAbbreviation)  (S.toList states))
-                (projModel rc id predF mc)
+  (dw, code) <-  S.dataWranglerAndCode acsCountedByPUMA_C (pure ())
+                 (stateGroupBuilder (view GT.stateAbbreviation)  (S.toList states))
+                 (const $ pure ())
+                 (\dataRTT _ -> projModel rc id predF mc dataRTT)
 
   let unwraps = case rc.rcIncludePPCheck of
         Just nChoices ->
-          let f n = SR.UnwrapExpr ("matrix(ncol="
-                                    <> show nChoices
-                                    <> ", byrow=TRUE, unlist(jsonData $ MCounts))[,"
-                                    <> show n <> "]") ("yCounts_" <> show n)
+          let f n = S.UnwrapExpr ("matrix(ncol="
+                                   <> show nChoices
+                                   <> ", byrow=TRUE, unlist(jsonData $ MCounts))[,"
+                                   <> show n <> "]") ("yCounts_" <> show n)
           in fmap f [1..nChoices]
         Nothing -> []
 --      unwraps = [SR.UnwrapNamed "MCounts" "yCounts"]
-  res_C <- SMR.runModel' @BRCC.SerializerC @BRCC.CacheData
+  res_C <- S.runModel' @BRCC.SerializerC @BRCC.CacheData
            cacheDirE
            (Right runnerInputNames)
-           (Just $ SC.StanMCParameters 4 4 (Just 1000) (Just 1000) Nothing Nothing (Just 1))
+           (Just $ S.StanMCParameters 4 4 (Just 1000) (Just 1000) Nothing Nothing (Just 1))
            dw
            code
-           SC.DoNothing
-           (SMR.Both unwraps) --(SMR.Both [SR.UnwrapNamed "successes" "yObserved"])
+           S.DoNothing
+           (S.Both unwraps) --(SMR.Both [SR.UnwrapNamed "successes" "yObserved"])
            acsCountedByPUMA_C
            (pure ())
   K.logLE K.Info "projModel run complete."
@@ -529,42 +545,42 @@ instance Applicative PModel0 where
   PModel0 <*> PModel0 = PModel0
 
 
-designMatrixRow1 :: DM.DesignMatrixRow (PModel1 Double)
-designMatrixRow1 = DM.DesignMatrixRow "Model1" [DM.DesignMatrixRowPart "logDensity" 1 (VU.singleton . pdLogDensity)]
+designMatrixRow1 :: S.DesignMatrixRow (PModel1 Double)
+designMatrixRow1 = S.DesignMatrixRow "Model1" [S.DesignMatrixRowPart "logDensity" 1 (VU.singleton . pdLogDensity)]
 
 
-designMatrixRow0 :: DM.DesignMatrixRow (PModel0 Double)
-designMatrixRow0 = DM.DesignMatrixRow "PModel0" []
+designMatrixRow0 :: S.DesignMatrixRow (PModel0 Double)
+designMatrixRow0 = S.DesignMatrixRow "PModel0" []
 
-designMatrixRow_1 :: DM.DesignMatrixRow (F.Record '[DT.Education4C])
-designMatrixRow_1 = DM.DesignMatrixRow "Base" [cRP]
+designMatrixRow_1 :: S.DesignMatrixRow (F.Record '[DT.Education4C])
+designMatrixRow_1 = S.DesignMatrixRow "Base" [cRP]
   where
-    cRP = DM.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
+    cRP = S.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
 --    eRP = DM.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
 
-designMatrixRow_E :: DM.DesignMatrixRow (F.Record '[DT.Education4C])
-designMatrixRow_E = DM.DesignMatrixRow "E" [eRP]
+designMatrixRow_E :: S.DesignMatrixRow (F.Record '[DT.Education4C])
+designMatrixRow_E = S.DesignMatrixRow "E" [eRP]
   where
-    eRP = DM.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
+    eRP = S.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
 
 
-designMatrixRow_1_E :: DM.DesignMatrixRow (F.Record '[DT.Education4C])
-designMatrixRow_1_E = DM.DesignMatrixRow "I_E" [cRP, eRP]
+designMatrixRow_1_E :: S.DesignMatrixRow (F.Record '[DT.Education4C])
+designMatrixRow_1_E = S.DesignMatrixRow "I_E" [cRP, eRP]
   where
-    cRP = DM.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
-    eRP = DM.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
+    cRP = S.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
+    eRP = S.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
 
-designMatrixRow_1_S_E :: DM.DesignMatrixRow (F.Record '[DT.SexC, DT.Education4C])
-designMatrixRow_1_S_E = DM.DesignMatrixRow "I_S_E" [cRP, sRP, eRP]
+designMatrixRow_1_S_E :: S.DesignMatrixRow (F.Record '[DT.SexC, DT.Education4C])
+designMatrixRow_1_S_E = S.DesignMatrixRow "I_S_E" [cRP, sRP, eRP]
   where
-    cRP = DM.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
-    sRP = DM.boundedEnumRowPart Nothing "Sex" (view DT.sexC)
-    eRP = DM.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
+    cRP = S.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
+    sRP = S.boundedEnumRowPart Nothing "Sex" (view DT.sexC)
+    eRP = S.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
 
-designMatrixRow_1_S_E_R :: DM.DesignMatrixRow (F.Record [DT.SexC, DT.Education4C, DT.Race5C])
-designMatrixRow_1_S_E_R = DM.DesignMatrixRow "I_S_E_R" [cRP, sRP, eRP, rRP]
+designMatrixRow_1_S_E_R :: S.DesignMatrixRow (F.Record [DT.SexC, DT.Education4C, DT.Race5C])
+designMatrixRow_1_S_E_R = S.DesignMatrixRow "I_S_E_R" [cRP, sRP, eRP, rRP]
   where
-    cRP = DM.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
-    sRP = DM.boundedEnumRowPart Nothing "Sex" (view DT.sexC)
-    eRP = DM.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
-    rRP = DM.boundedEnumRowPart (Just DT.R5_WhiteNonHispanic) "Race" (view DT.race5C)
+    cRP = S.DesignMatrixRowPart "Ones" 1 (const $ VU.singleton 1) -- for pure (state-level) alpha
+    sRP = S.boundedEnumRowPart Nothing "Sex" (view DT.sexC)
+    eRP = S.boundedEnumRowPart (Just DT.E4_HSGrad) "Edu" (view DT.education4C)
+    rRP = S.boundedEnumRowPart (Just DT.R5_WhiteNonHispanic) "Race" (view DT.race5C)

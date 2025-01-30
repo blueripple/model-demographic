@@ -1,4 +1,4 @@
-packages: ./ ~/DataScience/data-science-utils ~/DataScience/nlopt-haskell ../data-ACS-Tables ~/DataScience/knit-haskell
+packages: ./ ~/DataScience/data-science-utils ~/DataScience/nlopt-haskell ../data-ACS-Tables ~/DataScience/knit-haskell ~/DataScience/haskell-stan ~/DataScience/haskell-stan/haskell-stan-language ~/DataScience/haskell-stan/haskell-stan-functions ~/DataScience/haskell-stan/haskell-stan-builder ~/DataScience/haskell-stan/haskell-stan-building-blocks ~/DataScience/haskell-stan/haskell-stan-runner
 jobs: 4
 with-compiler: ghc
 
@@ -36,7 +36,8 @@ import: ../cabal_repo_imports/data-loading.project
 --import: ../cabal_repo_imports/data-ACS-Tables.project
 import: ../cabal_repo_imports/data-ACS-PUMS.project
 import: ../cabal_repo_imports/model-tools.project
-import: ../cabal_repo_imports/haskell-stan.project
+--import: ../cabal_repo_imports/haskell-stan.project
+import: ../cabal_repo_imports/hs-cmdstan.project
 --import: ../cabal_repo_imports/knit-haskell.project
 import: ../cabal_repo_imports/Frames-streamly.project
 import: ../cabal_repo_imports/Frames-serialize.project

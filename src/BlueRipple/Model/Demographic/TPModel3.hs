@@ -58,7 +58,12 @@ import qualified Data.Vector.Unboxed as VU
 import Control.Lens (Lens', view, over, (^.), _2)
 import GHC.TypeLits (Symbol)
 
+import qualified Stan as S
+import qualified Stan.BuildingBlocks as SBB (rowLength)
+import Stan (TypedList(..))
+import Stan.Operators
 import qualified CmdStan as CS
+{-
 import qualified Stan.ModelBuilder as SMB
 import qualified Stan.ModelRunner as SMR
 import qualified Stan.ModelConfig as SC
@@ -74,6 +79,7 @@ import qualified Stan.ModelBuilder.TypedExpressions.Operations as TEO
 import qualified Stan.ModelBuilder.TypedExpressions.DAG as DAG
 import qualified Stan.ModelBuilder.TypedExpressions.StanFunctions as SF
 import Stan.ModelBuilder.TypedExpressions.TypedList (TypedList(..))
+-}
 import qualified Flat
 import Flat.Instances.Vector ()
 
@@ -156,8 +162,8 @@ cwdCovariatesFld keyF datF = fmap (\cws -> VS.concat [VS.singleton (safeLog $ cw
 mergeInnerFlds :: [FL.Fold (F.Record rs) (VS.Vector Double)] -> FL.Fold (F.Record rs) (VS.Vector Double)
 mergeInnerFlds = fmap VS.concat . sequenceA
 
-dmr :: Text -> Int -> DM.DesignMatrixRow (VS.Vector Double)
-dmr t n = DM.DesignMatrixRow t [DM.DesignMatrixRowPart t n VU.convert]
+dmr :: Text -> Int -> S.DesignMatrixRow (VS.Vector Double)
+dmr t n = S.DesignMatrixRow t [S.DesignMatrixRowPart t n VU.convert]
 
 -- NB: nullVecs we use are not the ones from SVD but a subset of a rotation of those via
 -- the eigenvectors of the covariance
@@ -199,6 +205,8 @@ data ProjData outerK =
     pdNPredictrs :: Int
   , pdRows :: [ProjDataRow outerK]
   }
+
+type ProjDataRTT a = S.RowTypeTag (ProjData a) (ProjDataRow a)
 {-
 newtype RecordKey ks = RecordKey (F.Record ks)
 
@@ -289,23 +297,24 @@ predictedJoint onSimplexM wgtLens p gk covariates keyedProduct = do
     <> "\nC * (predicted - product) = " <> DED.prettyVector checkV
   pure predictedTable
 
-stateG :: SMB.GroupTypeTag Text
-stateG = SMB.GroupTypeTag "State"
+stateG :: S.GroupTypeTag Text
+stateG = S.GroupTypeTag "State"
 
 stateGroupBuilder :: (Foldable f, Typeable outerK)
-                  => (outerK -> Text) -> f Text -> SMB.StanGroupBuilderM (ProjData outerK) () ()
+                  => (outerK -> Text) -> f Text -> S.StanDataBuilderEff S.ModelDataT (ProjData outerK) (ProjDataRTT outerK)
 stateGroupBuilder saF states = do
-  projData <- SMB.addModelDataToGroupBuilder "ProjectionData" (SMB.ToFoldable pdRows)
-  SMB.addGroupIndexForData stateG projData $ SMB.makeIndexFromFoldable show (saF . pdKey) states
-  SMB.addGroupIntMapForDataSet stateG projData $ SMB.dataToIntMapFromFoldable (saF . pdKey) states
+  projData <- S.addData "ProjectionData" S.ModelDataT (S.ToFoldable pdRows)
+  S.addGroupIndexForData stateG projData $ S.makeIndexFromFoldable show (saF . pdKey) states
+  S.addGroupIntMapForData stateG projData $ S.dataToIntMapFromFoldable (saF . pdKey) states
+  pure projData
 
 data ProjModelData outerK =
   ProjModelData
   {
-    projDataTag :: SMB.RowTypeTag (ProjDataRow outerK)
-  , nPredictorsE :: TE.IntE
-  , predictorsE :: TE.MatrixE
-  , projectionsE :: TE.VectorE
+    projDataTag :: ProjDataRTT outerK
+  , nPredictorsE :: S.IntE
+  , predictorsE :: S.MatrixE
+  , projectionsE :: S.VectorE
   }
 
 data AlphaModel = AlphaSimple | AlphaHierCentered | AlphaHierNonCentered deriving stock (Show)
@@ -331,7 +340,7 @@ data ModelConfig =
   ModelConfig
   {
     standardizeNVs :: Bool
-  , designMatrixRow :: DM.DesignMatrixRow (VS.Vector Double)
+  , designMatrixRow :: S.DesignMatrixRow (VS.Vector Double)
   , alphaModel :: AlphaModel
   , thetaModel :: ThetaModel
   , distribution :: Distribution
@@ -351,28 +360,29 @@ dataText (ModelConfig _ dmr' _ _ _) = dmr'.dmName
 
 projModelData :: forall outerK . Typeable outerK
               => ModelConfig
-              -> SMB.StanBuilderM (ProjData outerK) () (ProjModelData outerK)
-projModelData mc = do
-  projData <- SMB.dataSetTag @(ProjDataRow outerK) SC.ModelData "ProjectionData"
---  let projMER :: SMB.MatrixRowFromData (ProjDataRow outerK) --(outerK, md Double, VS.Vector Double)
---      projMER = SMB.MatrixRowFromData "nvp" Nothing (modelNumNullVecs mc) (\(_, _, v) -> VU.convert v)
-  pmE <- SBB.addRealData projData "projection" Nothing Nothing pdCoeff
-  let (_, nPredictorsE') = DM.designMatrixColDimBinding mc.designMatrixRow Nothing
-  dmE <- if DM.rowLength mc.designMatrixRow > 0
-         then DM.addDesignMatrix projData (contramap pdCovariates mc.designMatrixRow) Nothing
-         else pure $ TE.namedE "ERROR" TE.SMat -- this shouldn't show up in stan code at all
+              -> ProjDataRTT outerK
+              -> S.StanModelBuilderEff (ProjData outerK) () (ProjModelData outerK)
+projModelData mc projData = do
+--  projData <- S.dataSetTag @(ProjDataRow outerK) S.ModelData "ProjectionData"
+--  let projMER :: S.MatrixRowFromData (ProjDataRow outerK) --(outerK, md Double, VS.Vector Double)
+--      projMER = S.MatrixRowFromData "nvp" Nothing (modelNumNullVecs mc) (\(_, _, v) -> VU.convert v)
+  pmE <- S.addRealData @S.ModelDataT projData "projection" Nothing Nothing pdCoeff
+  let (_, nPredictorsE') = S.designMatrixColDimBinding mc.designMatrixRow Nothing
+  dmE <- if SBB.rowLength mc.designMatrixRow > 0
+         then S.addDesignMatrix @S.ModelDataT projData (contramap pdCovariates mc.designMatrixRow) Nothing
+         else pure $ S.namedE "ERROR" S.SMat -- this shouldn't show up in stan code at all
   pure $ ProjModelData projData nPredictorsE' dmE pmE
 
 -- given K null vectors, S states, and D predictors
 -- alpha, theta, sigma
 -- alpha is a K row-vector or S x K matrix
-data Alpha = SimpleAlpha (DAG.Parameter TE.EReal) | HierarchicalAlpha (DAG.Parameter TE.ECVec)
+data Alpha = SimpleAlpha (S.Parameter S.EReal) | HierarchicalAlpha (S.Parameter S.ECVec)
 -- theta is a D x K matrix (or Nothing)
-newtype Theta = Theta (Maybe (DAG.Parameter TE.ECVec))
+newtype Theta = Theta (Maybe (S.Parameter S.ECVec))
 -- sigma is a K row-vector
-newtype Sigma = Sigma {unSigma :: DAG.Parameter TE.EReal}
+newtype Sigma = Sigma {unSigma :: S.Parameter S.EReal}
 
-newtype Nu = Nu { unNu :: DAG.Parameter TE.EReal }
+newtype Nu = Nu { unNu :: S.Parameter S.EReal }
 
 data ProjModelParameters where
   NormalProjModelParameters :: Alpha -> Theta -> Sigma -> ProjModelParameters
@@ -384,48 +394,48 @@ paramTheta (NormalProjModelParameters _ t _) = t
 paramTheta (CauchyProjModelParameters _ t _) = t
 paramTheta (StudentTProjModelParameters _ t _ _) = t
 
-projModelParameters :: ModelConfig -> ProjModelData outerK -> SMB.StanBuilderM (ProjData outerK) () ProjModelParameters
+projModelParameters :: ModelConfig -> ProjModelData outerK -> S.StanModelBuilderEff (ProjData outerK) () ProjModelParameters
 projModelParameters mc pmd = do
-  let stdNormalDWA :: (TE.TypeOneOf t [TE.EReal, TE.ECVec, TE.ERVec], TE.GenSType t) => TE.DensityWithArgs t
-      stdNormalDWA = TE.DensityWithArgs SF.std_normal TNil
-      numPredictors = DM.rowLength mc.designMatrixRow
+  let stdNormalDWA :: (S.TypeOneOf t [S.EReal, S.ECVec, S.ERVec], S.GenSType t) => S.DensityWithArgs t
+      stdNormalDWA = S.DensityWithArgs S.std_normal TNil
+      numPredictors = SBB.rowLength mc.designMatrixRow
 
   sigma <-  Sigma
-             <$> DAG.simpleParameterWA
-             (TE.NamedDeclSpec "sigma" $ TE.realSpec [TE.lowerM $ TE.realE 0])
+             <$> S.simpleParameterWA
+             (S.NamedDeclSpec "sigma" $ S.addVMs (S.Modifiers [S.lowerM $ S.realE 0]) S.realSpec)
              stdNormalDWA
-  let nStatesE = SMB.groupSizeE stateG
-      hierAlphaNDS = TE.NamedDeclSpec "alpha" $ TE.vectorSpec nStatesE []
+  let nStatesE = S.groupSizeE stateG
+      hierAlphaNDS = S.NamedDeclSpec "alpha" $ S.vectorSpec nStatesE
       hierAlphaPs = do
-        muAlphaP <- DAG.simpleParameterWA
-                    (TE.NamedDeclSpec "muAlpha" $ TE.realSpec [])
+        muAlphaP <- S.simpleParameterWA
+                    (S.NamedDeclSpec "muAlpha" S.realSpec)
                     stdNormalDWA
-        sigmaAlphaP <-  DAG.simpleParameterWA
-                        (TE.NamedDeclSpec "sigmaAlpha" $ TE.realSpec [TE.lowerM $ TE.realE 0])
+        sigmaAlphaP <-  S.simpleParameterWA
+                        (S.NamedDeclSpec "sigmaAlpha" $ S.addVMs (S.Modifiers [S.lowerM $ S.realE 0]) S.realSpec)
                         stdNormalDWA
         pure (muAlphaP :> sigmaAlphaP :> TNil)
   alpha <- case mc.alphaModel of
     AlphaSimple -> do
       fmap SimpleAlpha
-        $ DAG.simpleParameterWA
-        (TE.NamedDeclSpec "alpha" $ TE.realSpec [])
+        $ S.simpleParameterWA
+        (S.NamedDeclSpec "alpha" S.realSpec)
         stdNormalDWA
     AlphaHierCentered -> do
       alphaPs <- hierAlphaPs
       fmap HierarchicalAlpha
-        $ DAG.addBuildParameter
-        $ DAG.UntransformedP hierAlphaNDS [] alphaPs
+        $ S.addBuildParameter
+        $ S.UntransformedP hierAlphaNDS [] alphaPs
         $ \(muAlphaE :> sigmaAlphaE :> TNil) m
-          -> TE.addStmt $ TE.sample m SF.normalS (muAlphaE :> sigmaAlphaE :> TNil)
+          -> S.addStmt $ S.sample m S.normalS (muAlphaE :> sigmaAlphaE :> TNil)
     AlphaHierNonCentered -> do
       alphaPs <- hierAlphaPs
-      let rawNDS = TE.NamedDeclSpec (TE.declName hierAlphaNDS <> "_raw") $ TE.decl hierAlphaNDS
-      rawAlphaP <- DAG.simpleParameterWA rawNDS stdNormalDWA
+      let rawNDS = S.NamedDeclSpec (S.declName hierAlphaNDS <> "_raw") $ S.decl hierAlphaNDS
+      rawAlphaP <- S.simpleParameterWA rawNDS stdNormalDWA
       fmap HierarchicalAlpha
-        $ DAG.addBuildParameter
-        $ DAG.TransformedP hierAlphaNDS []
-        (rawAlphaP :> alphaPs) DAG.TransformedParametersBlock
-        (\(rawE :> muAlphaE :> muSigmaE :> TNil) -> DAG.DeclRHS $ muAlphaE `TE.plusE` (muSigmaE `TE.timesE` rawE))
+        $ S.addBuildParameter
+        $ S.TransformedP hierAlphaNDS []
+        (rawAlphaP :> alphaPs) S.TransformedParametersBlock
+        (\(rawE :> muAlphaE :> muSigmaE :> TNil) -> S.DeclRHS $ muAlphaE `S.plusE` (muSigmaE `S.timesE` rawE))
         TNil (\_ _ -> pure ())
   -- for now all the thetas are iid normal, but perchance hierarchical
   theta <- if numPredictors == 0
@@ -433,27 +443,27 @@ projModelParameters mc pmd = do
            else case mc.thetaModel of
                   ThetaSimple ->
                     (Theta . Just)
-                    <$> DAG.simpleParameterWA
-                    (TE.NamedDeclSpec "theta" $ TE.vectorSpec pmd.nPredictorsE [])
+                    <$> S.simpleParameterWA
+                    (S.NamedDeclSpec "theta" $ S.vectorSpec pmd.nPredictorsE)
                     stdNormalDWA
                   ThetaHierarchical -> do
-                    sigmaThetaP <-  DAG.simpleParameterWA
-                      (TE.NamedDeclSpec "sigmaTheta" $ TE.realSpec [TE.lowerM $ TE.realE 0])
+                    sigmaThetaP <-  S.simpleParameterWA
+                      (S.NamedDeclSpec "sigmaTheta" $ S.addVMs (S.Modifiers [S.lowerM $ S.realE 0]) S.realSpec)
                       stdNormalDWA
                     fmap (Theta . Just)
-                      $ DAG.addBuildParameter
-                      $ DAG.UntransformedP
-                      (TE.NamedDeclSpec "theta" $ TE.vectorSpec pmd.nPredictorsE []) [] (sigmaThetaP :> TNil)
-                      $ \(sigmaThetaE :> TNil) m -> TE.addStmt $ TE.sample m SF.normalS (TE.realE 0 :> sigmaThetaE :> TNil)
+                      $ S.addBuildParameter
+                      $ S.UntransformedP
+                      (S.NamedDeclSpec "theta" $ S.vectorSpec pmd.nPredictorsE) [] (sigmaThetaP :> TNil)
+                      $ \(sigmaThetaE :> TNil) m -> S.addStmt $ S.sample m S.normalS (S.realE 0 :> sigmaThetaE :> TNil)
   case mc.distribution of
     NormalDist -> pure $ NormalProjModelParameters alpha theta sigma
     CauchyDist -> pure $ CauchyProjModelParameters alpha theta sigma
     StudentTDist -> do
---      let kVectorOf x = TE.functionE SF.rep_row_vector (TE.realE x :> pmd.nNullVecsE :> TNil)
+--      let kVectorOf x = S.functionE S.rep_row_vector (S.realE x :> pmd.nNullVecsE :> TNil)
       nu <-  fmap Nu
-             $ DAG.simpleParameterWA
-             (TE.NamedDeclSpec "nu" $ TE.realSpec [TE.lowerM $ TE.realE 0])
-             (TE.DensityWithArgs SF.gamma (TE.realE 2 :> TE.realE 0.1 :> TNil))
+             $ S.simpleParameterWA
+             (S.NamedDeclSpec "nu" $ S.addVMs (S.Modifiers [S.lowerM $ S.realE 0]) S.realSpec)
+             (S.DensityWithArgs S.gamma (S.realE 2 :> S.realE 0.1 :> TNil))
       pure $ StudentTProjModelParameters alpha theta sigma nu
 
 data RunConfig = RunConfig { nvIndex :: Int, rcIncludePPCheck :: Bool, rcIncludeLL :: Bool, statesM :: Maybe (Text, [Text]) }
@@ -462,89 +472,90 @@ data RunConfig = RunConfig { nvIndex :: Int, rcIncludePPCheck :: Bool, rcInclude
 projModel :: (Typeable outerK)
           => RunConfig
           -> ModelConfig
-          -> SMB.StanBuilderM (ProjData outerK) () ()
-projModel rc mc = do
-  mData <- projModelData mc
+          -> ProjDataRTT outerK
+          -> S.StanModelBuilderEff (ProjData outerK) () ()
+projModel rc mc projData = do
+  mData <- projModelData mc projData
   mParams <- projModelParameters mc mData
-  let betaNDS = TE.NamedDeclSpec "beta" $ TE.vectorSpec mData.nPredictorsE []
-      nRowsE = SMB.dataSetSizeE mData.projDataTag
-      fstI x k = TE.sliceE TEI.s0 k x
-      pExpr = DAG.parameterExpr
+  let betaNDS = S.NamedDeclSpec "beta" $ S.vectorSpec mData.nPredictorsE
+      nRowsE = S.dataSetSizeE mData.projDataTag
+--      fstI x k = S.sliceE S.s0 k x
+      pExpr = S.parameterExpr
 
---      sndI x k = TE.sliceE TEI.s1 k x
---      loopNVs = TE.for "k" (TE.SpecificNumbered (TE.intE 1) mData.nNullVecsE)
+--      sndI x k = S.sliceE S.s1 k x
+--      loopNVs = S.for "k" (S.SpecificNumbered (S.intE 1) mData.nNullVecsE)
   (predM, _centerF, _mBeta) <- case paramTheta mParams of
     Theta (Just thetaP) -> do
-      (centeredPredictorsE, centerF) <- DM.centerDataMatrix DM.DMCenterOnly mData.predictorsE Nothing "DM"
-      (dmQ, _, _, mBeta) <- DM.thinQR centeredPredictorsE "DM" $ Just (pExpr thetaP, betaNDS)
+      (centeredPredictorsE, centerF) <- S.centerDataMatrix S.DMCenterOnly mData.predictorsE Nothing "DM"
+      (dmQ, _, _, mBeta) <- S.thinQR centeredPredictorsE "DM" $ Just (pExpr thetaP, betaNDS)
       pure (dmQ, centerF, mBeta)
-    Theta Nothing -> pure (TE.namedE "ERROR" TE.SMat, \_ x _ -> pure x, Nothing)
+    Theta Nothing -> pure (S.namedE "ERROR" S.SMat, \_ x _ -> pure x, Nothing)
   (stdNVP, inverseF) <- case mc.standardizeNVs of
     True -> do
-      sdP <- DAG.addBuildParameter
-             $ DAG.TransformedDataP
-             $ DAG.TData
-             (TE.NamedDeclSpec "nvpSD" $ TE.realSpec []) []
-             TNil (\_ -> DAG.DeclRHS $  TE.functionE SF.sd (mData.projectionsE :> TNil))
-      stdNVP <- SMB.inBlock SMB.SBTransformedData $ SMB.addFromCodeWriter
-                $ TE.declareRHSNW (TE.NamedDeclSpec "stdNVP" $ TE.vectorSpec nRowsE [])
-                $ mData.projectionsE `TE.divideE` pExpr sdP
-      let inverse :: (t ~ TEO.BinaryResultT TEO.BMultiply TE.EReal t) => TE.UExpr t -> TE.UExpr t
-          inverse psCol = pExpr sdP `TE.timesE` psCol
+      sdP <- S.addBuildParameter
+             $ S.TransformedDataP
+             $ S.TData
+             (S.NamedDeclSpec "nvpSD" S.realSpec) []
+             TNil (\_ -> S.DeclRHS $ S.sd mData.projectionsE)
+      stdNVP <- S.inBlock S.SBTransformedData $ S.addFromCodeWriter
+                $ S.declareRHSNW (S.NamedDeclSpec "stdNVP" $ S.vectorSpec nRowsE)
+                $ mData.projectionsE |/| pExpr sdP
+      let inverse :: (t ~ S.BinaryResultT S.BMultiply S.EReal t) => S.UExpr t -> S.UExpr t
+          inverse psCol = pExpr sdP `S.timesE` psCol
       pure (stdNVP, inverse)
     False -> pure (mData.projectionsE, id)
 
   -- model
-  let reIndexByState = TE.indexE TEI.s0 (SMB.byGroupIndexE mData.projDataTag stateG)
-      muE :: Alpha -> Theta -> TE.VectorE
+  let reIndexByState = S.indexE S.s0 (S.dataByGroupIndexE mData.projDataTag stateG)
+      muE :: Alpha -> Theta -> S.VectorE
       muE a t =  case a of
        SimpleAlpha alphaP -> case t of
-         Theta Nothing -> TE.functionE SF.rep_vector (pExpr alphaP :> nRowsE :> TNil)
-         Theta (Just thetaP) -> pExpr alphaP `TE.plusE` (predM `TE.timesE` pExpr thetaP)
+         Theta Nothing -> S.rep_vector (pExpr alphaP) nRowsE
+         Theta (Just thetaP) -> pExpr alphaP |+| (predM |*| pExpr thetaP)
        HierarchicalAlpha alpha -> case t of
          Theta Nothing -> reIndexByState $ pExpr alpha
-         Theta (Just thetaP) -> reIndexByState (pExpr alpha) `TE.plusE` (predM `TE.timesE` pExpr thetaP)
-      sigmaE :: Sigma -> TE.VectorE
-      sigmaE s = TE.functionE SF.rep_vector (pExpr (unSigma s) :> nRowsE :> TNil)
+         Theta (Just thetaP) -> reIndexByState (pExpr alpha) |+| (predM |*| pExpr thetaP)
+      sigmaE :: Sigma -> S.VectorE
+      sigmaE s = S.rep_vector (pExpr (unSigma s)) nRowsE
 
-  let ppF :: ((TE.IntE -> TE.ExprList xs) -> TE.IntE -> TE.UExpr TE.EReal)
-          -> TE.CodeWriter (TE.IntE -> TE.ExprList xs)
-          -> SMB.StanBuilderM (ProjData outerK) () (TE.ArrayE TE.EReal)
-      ppF rngF rngPSCW = SBB.generatePosteriorPrediction'
+  let ppF :: ((S.IntE -> S.ExprList xs) -> S.IntE -> S.UExpr S.EReal)
+          -> S.CodeWriter (S.IntE -> S.ExprList xs)
+          -> S.StanModelBuilderEff (ProjData outerK) () (S.ArrayE S.EReal)
+      ppF rngF rngPSCW = S.generatePosteriorPrediction'
                          mData.projDataTag
-                         (TE.NamedDeclSpec "predProj" $ TE.array1Spec nRowsE $ TE.realSpec [])
+                         (S.NamedDeclSpec "predProj" $ S.array1Spec nRowsE S.realSpec)
                          rngF
                          rngPSCW
                          (\_ p -> inverseF p)
-      llF :: SMD.StanDist t pts rts
-          -> TE.CodeWriter (TE.IntE -> TE.ExprList pts)
-          -> TE.CodeWriter (TE.IntE -> TE.UExpr t)
-          -> SMB.StanBuilderM md gq ()
-      llF = SBB.generateLogLikelihood mData.projDataTag
+      llF :: S.StanDist t pts rts
+          -> S.CodeWriter (S.IntE -> S.ExprList pts)
+          -> S.CodeWriter (S.IntE -> S.UExpr t)
+          -> S.StanModelBuilderEff md gq ()
+      llF = S.generateLogLikelihood mData.projDataTag
 
   let (sampleStmtF, pp, ll) = case mParams of
         NormalProjModelParameters a t s ->
-          let ssF e = TE.sample e SF.normal (muE a t :> sigmaE s  :> TNil)
-              rF f nE = TE.functionE SF.normal_rng (f nE)
-              rpF = pure $ \nE -> muE a t `fstI` nE :> sigmaE s `fstI` nE :> TNil
-              ll' = llF SMD.normalDist rpF (pure $ \nE -> stdNVP `TE.at` nE)
+          let ssF e = S.sample e S.normal (muE a t :> sigmaE s  :> TNil)
+              rF f nE = S.functionE S.normal_rngF (f nE)
+              rpF = pure $ \nE -> muE a t !! nE :> sigmaE s !! nE :> TNil
+              ll' = llF S.normalDist rpF (pure $ \nE -> stdNVP !! nE)
           in (ssF, ppF rF rpF, ll')
         CauchyProjModelParameters a t s ->
-          let ssF e = TE.sample e SF.cauchy (muE a t :> sigmaE s :> TNil)
-              rF f nE = TE.functionE SF.cauchy_rng (f nE)
-              rpF = pure $ \nE -> muE a t `fstI` nE :> sigmaE s `fstI` nE :> TNil
-              ll' = llF SMD.cauchyDist rpF (pure $ \nE -> stdNVP `TE.at` nE)
+          let ssF e = S.sample e S.cauchy (muE a t :> sigmaE s :> TNil)
+              rF f nE = S.functionE S.cauchy_rngF (f nE)
+              rpF = pure $ \nE -> muE a t !! nE :> sigmaE s !! nE :> TNil
+              ll' = llF S.cauchyDist rpF (pure $ \nE -> stdNVP !! nE)
           in (ssF, ppF rF rpF, ll')
         StudentTProjModelParameters a t s n ->
-          let nu :: Nu -> TE.VectorE
-              nu n' = TE.functionE SF.rep_vector (pExpr (unNu n') :> nRowsE :> TNil)
-              ssF e = TE.sample e SF.student_t (nu n  :> muE a t :> sigmaE s :> TNil)
-              rF f nE = TE.functionE SF.student_t_rng (f nE)
-              rpF = pure $ \nE -> nu n `fstI` nE :> muE a t `fstI` nE :> sigmaE s `fstI` nE :>  TNil
-              ll' = llF SMD.studentTDist rpF (pure $ \nE -> stdNVP `TE.at` nE)
+          let nu :: Nu -> S.VectorE
+              nu n' = S.rep_vector (pExpr (unNu n')) nRowsE
+              ssF e = S.sample e S.student_t (nu n  :> muE a t :> sigmaE s :> TNil)
+              rF f nE = S.functionE S.student_t_rngF (f nE)
+              rpF = pure $ \nE -> nu n !! nE :> muE a t !! nE :> sigmaE s !! nE :>  TNil
+              ll' = llF S.studentTDist rpF (pure $ \nE -> stdNVP !! nE)
           in (ssF, ppF rF rpF, ll')
 
-  SMB.inBlock SMB.SBModel $ SMB.addFromCodeWriter $ TE.addStmt $ sampleStmtF stdNVP
+  S.inBlock S.SBModel $ S.addFromCodeWriter $ S.addStmt $ sampleStmtF stdNVP
   -- generated quantities
   when rc.rcIncludePPCheck $ void pp
   when rc.rcIncludeLL ll
@@ -608,28 +619,29 @@ runProjModel cacheDirE rc mom projData_C states {- nvps_C ms datFld -} = K.wrapP
       K.logLE K.Info $ "mean=" <> show mean <> "; sd=" <> show sd
       pure $ pure $ ComponentMean mean
     Model mc -> do
-      let modelData_C = ProjData (DM.rowLength mc.designMatrixRow) <$> rowData_C
+      let modelData_C = ProjData (SBB.rowLength mc.designMatrixRow) <$> rowData_C
           dataName = "projectionData_" <> dataText mc <> "_N" <> show rc.nvIndex <> maybe "" fst rc.statesM
       stanDir <- K.liftKnit MST.stanDir >>= K.knitMaybe "runModel: empty stanDir!" . BRCC.insureFinalSlash
-      let runnerInputNames = SC.RunnerInputNames
+      let runnerInputNames = S.RunnerInputNames
                              (stanDir <> "demographic/nullVecProj_M3_A5")
                              (modelText mc)
-                             (Just $ SC.GQNames "pp" dataName) -- posterior prediction vars to wrap
+                             (Just $ S.GQNames "pp" dataName) -- posterior prediction vars to wrap
                              dataName
-      (dw, code) <-  SMR.dataWranglerAndCode modelData_C (pure ())
+      (dw, code) <-  S.dataWranglerAndCode modelData_C (pure ())
                      (stateGroupBuilder (view GT.stateAbbreviation)  (S.toList states))
-                     (projModel rc mc)
+                     (const $ pure ())
+                     (\projDataRTT _  -> projModel rc mc projDataRTT)
 
-      let unwraps = [SR.UnwrapNamed "projection" "yProjection"]
+      let unwraps = [S.UnwrapNamed "projection" "yProjection"]
 
-      res_C <- SMR.runModel' @BRKU.SerializerC @BRKU.CacheData
+      res_C <- S.runModel' @BRKU.SerializerC @BRKU.CacheData
                cacheDirE
                (Right runnerInputNames)
                Nothing
                dw
                code
-               (projModelResultAction mc) --SC.DoNothing -- (stateModelResultAction mcWithId dmr)
-               (SMR.Both unwraps) --(SMR.Both [SR.UnwrapNamed "successes" "yObserved"])
+               (projModelResultAction mc) --S.DoNothing -- (stateModelResultAction mcWithId dmr)
+               (S.Both unwraps) --(S.Both [S.UnwrapNamed "successes" "yObserved"])
                modelData_C
                (pure ())
       K.logLE K.Info "projModel run complete."
@@ -641,30 +653,30 @@ projModelResultAction :: forall outerK r .
                          , Typeable outerK
                          )
                       => ModelConfig
-                      -> SC.ResultAction r (ProjData outerK) () SMB.DataSetGroupIntMaps () (ComponentPredictor Text)
-projModelResultAction mc = SC.UseSummary f where
+                      -> S.ResultAction (ProjData outerK) () S.DataSetGroupIntMaps r () (ComponentPredictor Text)
+projModelResultAction mc = S.UseSummary f where
   f summary _ modelDataAndIndexes_C _ = do
     (modelData, resultIndexesE) <- K.ignoreCacheTime modelDataAndIndexes_C
     -- compute means of predictors because model was zero-centered in them
-    let nPredictors = DM.rowLength mc.designMatrixRow
+    let nPredictors = SBB.rowLength mc.designMatrixRow
         mdMeansFld = FL.premap (VS.toList . pdCovariates)
                     $ traverse (\n -> FL.premap (List.!! n) FL.mean) [0..(nPredictors - 1)]
         nvpSDFld = FL.premap pdCoeff FL.std
         (mdMeansL, nvpSD) = FL.fold ((,) <$> mdMeansFld <*> nvpSDFld) $ pdRows modelData
         rescaleAlphaBeta x = if mc.standardizeNVs then x * nvpSD else x
     stateIM <- K.knitEither
-      $ resultIndexesE >>= SMB.getGroupIndex (SMB.RowTypeTag @(ProjDataRow outerK) SC.ModelData "ProjectionData") stateG
+      $ resultIndexesE >>= S.getGroupIndex (S.RowTypeTag @(ProjData outerK) @(ProjDataRow outerK) S.ModelDataT "ProjectionData") stateG
     let allStates = IM.elems stateIM
-        getScalar n = K.knitEither $ SP.getScalar . fmap CS.mean <$> SP.parseScalar n (CS.paramStats summary)
-        getVector n = K.knitEither $ SP.getVector . fmap CS.mean <$> SP.parse1D n (CS.paramStats summary)
---        getMatrix n = K.knitEither $ fmap CS.mean <$> SP.parse2D n (CS.paramStats summary)
+        getScalar n = K.knitEither $ S.getScalar . fmap CS.mean <$> S.parseScalar n (CS.paramStats summary)
+        getVector n = K.knitEither $ S.getVector . fmap CS.mean <$> S.parse1D n (CS.paramStats summary)
+--        getMatrix n = K.knitEither $ fmap CS.mean <$> S.parse2D n (CS.paramStats summary)
     geoMap <- case mc.alphaModel of
       AlphaSimple -> do
         alpha <- getScalar "alpha" -- states by nNullvecs
         pure $ M.fromList $ fmap (, rescaleAlphaBeta alpha) allStates
       _ -> do
         alphaV <- getVector "alpha"
---        let mRowToList row = SP.getIndexed alphaV row
+--        let mRowToList row = S.getIndexed alphaV row
         pure $ M.fromList $ fmap (\(stateIdx, stateAbbr) -> (stateAbbr, rescaleAlphaBeta (alphaV V.! (stateIdx - 1)))) $ IM.toList stateIM
     betaSI <- case nPredictors of
       0 -> pure V.empty
@@ -712,13 +724,13 @@ aserModelFuncs = ModelDataFuncs aserModelToList aserModelFromList where
     [x, y, z, a, b] -> Right $ ASERModelP x y z a b
     _ -> Left "aserModelFromList: wrong size list given (n /= 5)"
 
-designMatrixRowASER :: DM.DesignMatrixRow (ASERModelP Double)
-designMatrixRowASER = DM.DesignMatrixRow "ASER"
-                      [DM.DesignMatrixRowPart "logDensity" 1 (VU.singleton . mASER_PWLogDensity)
-                      , DM.DesignMatrixRowPart "fracOver45" 1 (VU.singleton . mASER_FracOver45)
-                      , DM.DesignMatrixRowPart "fracGrad" 1 (VU.singleton . mASER_FracGrad)
-                      , DM.DesignMatrixRowPart "fracOC" 1 (VU.singleton . mASER_FracOfColor)
-                      , DM.DesignMatrixRowPart "fracWNG" 1 (VU.singleton . mASER_FracWNG)
+designMatrixRowASER :: S.DesignMatrixRow (ASERModelP Double)
+designMatrixRowASER = S.DesignMatrixRow "ASER"
+                      [S.DesignMatrixRowPart "logDensity" 1 (VU.singleton . mASER_PWLogDensity)
+                      , S.DesignMatrixRowPart "fracOver45" 1 (VU.singleton . mASER_FracOver45)
+                      , S.DesignMatrixRowPart "fracGrad" 1 (VU.singleton . mASER_FracGrad)
+                      , S.DesignMatrixRowPart "fracOC" 1 (VU.singleton . mASER_FracOfColor)
+                      , S.DesignMatrixRowPart "fracWNG" 1 (VU.singleton . mASER_FracWNG)
                       ]
 
 
@@ -755,14 +767,14 @@ model1Funcs = ModelDataFuncs model1ToList model1FromList where
     [x, y, z] -> Right $ Model1P x y z
     _ -> Left "model1FromList: wrong size list given (n /= 3)"
 
-emptyDM :: DM.DesignMatrixRow (Model1P Double)
-emptyDM = DM.DesignMatrixRow "EDM" []
+emptyDM :: S.DesignMatrixRow (Model1P Double)
+emptyDM = S.DesignMatrixRow "EDM" []
 
-designMatrixRow1 :: DM.DesignMatrixRow (Model1P Double)
-designMatrixRow1 = DM.DesignMatrixRow "PM1"
-                   [DM.DesignMatrixRowPart "logDensity" 1 (VU.singleton . m1pPWLogDensity)
-                   , DM.DesignMatrixRowPart "fracGrad" 1 (VU.singleton . m1pFracGrad)
-                   , DM.DesignMatrixRowPart "fracOC" 1 (VU.singleton . m1pFracOfColor)
+designMatrixRow1 :: S.DesignMatrixRow (Model1P Double)
+designMatrixRow1 = S.DesignMatrixRow "PM1"
+                   [S.DesignMatrixRowPart "logDensity" 1 (VU.singleton . m1pPWLogDensity)
+                   , S.DesignMatrixRowPart "fracGrad" 1 (VU.singleton . m1pFracGrad)
+                   , S.DesignMatrixRowPart "fracOC" 1 (VU.singleton . m1pFracOfColor)
                    ]
 
 data Model2P a = Model2P { m2pPWLogDensity :: a, m2pFracCit :: a, m2pFracGrad :: a, m2pFracOfColor :: a }
@@ -802,11 +814,11 @@ model2Funcs = ModelDataFuncs model2ToList model2FromList where
     [x, y, z, a] -> Right $ Model2P x y z a
     _ -> Left "model1FromList: wrong size list given (n /= 3)"
 
-designMatrixRow2 :: DM.DesignMatrixRow (Model2P Double)
-designMatrixRow2 = DM.DesignMatrixRow "PM2"
-                   [DM.DesignMatrixRowPart "logDensity" 1 (VU.singleton . m2pPWLogDensity)
-                   , DM.DesignMatrixRowPart "fracCit" 1 (VU.singleton . m2pFracCit)
-                   , DM.DesignMatrixRowPart "fracGrad" 1 (VU.singleton . m2pFracGrad)
-                   , DM.DesignMatrixRowPart "fracOC" 1 (VU.singleton . m2pFracOfColor)
+designMatrixRow2 :: S.DesignMatrixRow (Model2P Double)
+designMatrixRow2 = S.DesignMatrixRow "PM2"
+                   [S.DesignMatrixRowPart "logDensity" 1 (VU.singleton . m2pPWLogDensity)
+                   , S.DesignMatrixRowPart "fracCit" 1 (VU.singleton . m2pFracCit)
+                   , S.DesignMatrixRowPart "fracGrad" 1 (VU.singleton . m2pFracGrad)
+                   , S.DesignMatrixRowPart "fracOC" 1 (VU.singleton . m2pFracOfColor)
                    ]
 -}
