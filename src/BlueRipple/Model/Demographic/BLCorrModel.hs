@@ -59,23 +59,6 @@ import qualified Stan.BuildingBlocks as SBB (rowLength)
 import Stan (TypedList(..))
 import Stan.Operators
 
-{-
-import qualified Stan.ModelBuilder as SMB
-import qualified Stan.ModelRunner as SMR
-import qualified Stan.ModelConfig as SC
-import qualified Stan.RScriptBuilder as SR
-import qualified Stan.ModelBuilder.BuildingBlocks as SBB
-import qualified Stan.ModelBuilder.BuildingBlocks.CovarianceStructure as SBC
-import qualified Stan.ModelBuilder.BuildingBlocks.DirichletMultinomial as SBDM
-import qualified Stan.ModelBuilder.DesignMatrix as DM
-import qualified Stan.ModelBuilder.Distributions as SD
-import qualified Stan.ModelBuilder.TypedExpressions.Types as TE
-import qualified Stan.ModelBuilder.TypedExpressions.Statements as TE
-import qualified Stan.ModelBuilder.TypedExpressions.Indexing as TEI
-import qualified Stan.ModelBuilder.TypedExpressions.DAG as DAG
-import qualified Stan.ModelBuilder.TypedExpressions.StanFunctions as SF
-import Stan.ModelBuilder.TypedExpressions.TypedList (TypedList(..))
--}
 import qualified Flat
 
 data PopAndDensity = PopAndDensity { pop :: Int, pwDensity :: Double}
@@ -137,7 +120,10 @@ instance (V.RMap rs, FS.RecFlat rs) => Flat.Flat (DataRow rs) where
   decode = fmap (\(sr, ms) -> DataRow (FS.fromS sr) ms) Flat.decode
 
 type DataRows rs = [DataRow rs]
-type DataRTT rs = S.RowTypeTag (DataRows rs) (DataRow rs)
+type DataRTT rs = S.RowTypeTag (DataRow rs)
+
+modelIDT :: S.InputDataType S.ModelDataT (DataRows rs)
+modelIDT = S.ModelData
 
 --deriving anyclass instance (Flat.Flat (ProjDataRow rs)) => Flat.Flat (ProjData rs)
 {-
@@ -212,18 +198,18 @@ dataText mc = mc.alphaDMR.dmName
 stateG :: S.GroupTypeTag Text
 stateG = S.GroupTypeTag "State"
 
-stateGroupBuilder :: (Foldable f, Typeable rs)
+stateGroupBuilder :: forall f rs. (Foldable f, Typeable rs)
                   => (F.Record rs -> Text) -> f Text -> S.StanDataBuilderEff S.ModelDataT (DataRows rs) (DataRTT rs)
 stateGroupBuilder saF states = do
-  dataSetTag <- S.addData "CountData" S.ModelDataT (S.ToFoldable id)
-  S.addGroupIndexForData stateG dataSetTag $ S.makeIndexFromFoldable show (saF . dataRowRec) states
-  S.addGroupIntMapForData stateG dataSetTag $ S.dataToIntMapFromFoldable (saF . dataRowRec) states
+  dataSetTag <- S.addData "CountData" (modelIDT @rs) (S.ToFoldable id)
+  S.addGroupIndexForData (modelIDT @rs) stateG dataSetTag $ S.makeIndexFromFoldable show (saF . dataRowRec) states
+  S.addGroupIntMapForData (modelIDT @rs) stateG dataSetTag $ S.dataToIntMapFromFoldable (saF . dataRowRec) states
   pure dataSetTag
 
 data ModelData rs =
   ModelData
   {
-    dataTag :: S.RowTypeTag (DataRows rs) (DataRow rs)
+    dataTag :: S.RowTypeTag (DataRow rs)
   , nCatsE :: S.IntE
   , countsE :: S.ArrayE (S.EArray1 S.EInt)
   , nCovariatesE :: S.IntE
@@ -235,16 +221,16 @@ data ModelData rs =
 --TODO: add predictors to alphas to make one matrix of covariates
 modelData :: forall pd alphaK rs . (Typeable rs)
           => ModelConfig alphaK pd
-          -> S.RowTypeTag (DataRows rs) (DataRow rs)
+          -> S.RowTypeTag (DataRow rs)
           -> (F.Record rs -> alphaK)
           -> (F.Record rs -> pd Double)
           -> S.StanModelBuilderEff (DataRows rs) () (ModelData rs)
 modelData mc dataSetTag catKey _predF = do
 --  dat <- S.dataSetTag @(DataRow rs) SC.ModelData "CountData"
-  (countsE', nCatsE') <- S.addArrayOfIntArrays @S.ModelDataT dataSetTag "MCounts" Nothing mc.nCounts dataRowCounts (Just 0) Nothing
+  (countsE', nCatsE') <- S.addArrayOfIntArrays (modelIDT @rs) dataSetTag "MCounts" Nothing mc.nCounts dataRowCounts (Just 0) Nothing
   let (_, nCovariatesE') = S.designMatrixColDimBinding mc.alphaDMR Nothing
   covariatesDME <- if SBB.rowLength mc.alphaDMR > 0
-                   then S.addDesignMatrix @S.ModelDataT dataSetTag (contramap (catKey . dataRowRec) mc.alphaDMR) Nothing
+                   then S.addDesignMatrix (modelIDT @rs) dataSetTag (contramap (catKey . dataRowRec) mc.alphaDMR) Nothing
                    else pure $ S.namedE "ERROR" S.SMat -- this shouldn't show up in stan code at all
 {-  let (_, nPredictorsE') = DM.designMatrixColDimBinding mc.predDMR Nothing
   dmE <- if DM.rowLength mc.predDMR > 0

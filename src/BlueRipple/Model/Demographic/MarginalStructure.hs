@@ -47,11 +47,11 @@ import qualified Flat
 import qualified Numeric.LinearAlgebra as LA
 import qualified Numeric.NLOPT as NLOPT
 
-import qualified Data.Vector.Generic as VG
+--import qualified Data.Vector.Generic as VG
 import qualified Data.Vector.Storable as VS
-import qualified Data.Vector.Unboxed as VU
+--import qualified Data.Vector.Unboxed as VU
 
-import qualified Numeric.ActiveSet as AS
+--import qualified Numeric.ActiveSet as AS
 
 import qualified Data.Vector.Unboxed.Deriving as DU
 

@@ -141,7 +141,10 @@ data ProjData outerK md =
   , pdRows :: [ProjDataRow outerK md]
   }
 
-type ProjDataRTT outerK md = S.RowTypeTag (ProjData outerK md) (ProjDataRow outerK md)
+modelIDT :: forall outerK md . S.InputDataType S.ModelDataT (ProjData outerK md)
+modelIDT = S.ModelData
+
+type ProjDataRTT outerK md = S.RowTypeTag (ProjDataRow outerK md)
 
 data ModelDataFuncs md a = ModelDataFuncs { mdfToList :: md a -> [a], mdfFromList :: [[(a, a)]] -> Either Text (md [(a, a)])}
 
@@ -166,13 +169,13 @@ modelResultNVPs mdf mr g md = do
 stateG :: S.GroupTypeTag Text
 stateG = S.GroupTypeTag "State"
 
-stateGroupBuilder :: (Foldable f, Typeable outerK, Typeable md)
+stateGroupBuilder :: forall f outerK md . (Foldable f, Typeable outerK, Typeable md)
                   => (outerK -> Text) -> f Text -> S.StanDataBuilderEff S.ModelDataT (ProjData outerK md) (ProjDataRTT outerK md)
 stateGroupBuilder saF states = do
   let ok (x, _, _) = x
-  projData <- S.addData "ProjectionData" S.ModelDataT (S.ToFoldable pdRows)
-  S.addGroupIndexForData stateG projData $ S.makeIndexFromFoldable show (saF . ok) states
-  S.addGroupIntMapForData stateG projData $ S.dataToIntMapFromFoldable (saF . ok) states
+  projData <- S.addData "ProjectionData" (modelIDT @outerK @md) (S.ToFoldable pdRows)
+  S.addGroupIndexForData (modelIDT @outerK @md) stateG projData $ S.makeIndexFromFoldable show (saF . ok) states
+  S.addGroupIntMapForData (modelIDT @outerK @md) stateG projData $ S.dataToIntMapFromFoldable (saF . ok) states
   pure projData
 
 data ProjModelData outerK md =
@@ -227,11 +230,11 @@ projModelData mc projData = do
 --  projData <- S.dataSetTag @(ProjDataRow outerK md) S.ModelData "ProjectionData"
   let projMER :: S.MatrixRowFromData (ProjDataRow outerK md) --(outerK, md Double, VS.Vector Double)
       projMER = S.MatrixRowFromData "nvp" Nothing (modelNumNullVecs mc) (\(_, _, v) -> VU.convert v)
-  (pmE, nNullVecsE') <- S.add2dMatrixData @S.ModelDataT projData projMER Nothing Nothing
+  (pmE, nNullVecsE') <- S.add2dMatrixData (modelIDT @outerK @md) projData projMER Nothing Nothing
 --  let nNullVecsE' = S.mrfdColumnsE projMER
   let (_, nPredictorsE') = S.designMatrixColDimBinding mc.designMatrixRow Nothing
   dmE <- if SBB.rowLength mc.designMatrixRow > 0
-         then S.addDesignMatrix @S.ModelDataT projData (contramap (\(_, md, _) -> md) mc.designMatrixRow) Nothing
+         then S.addDesignMatrix (modelIDT @outerK @md) projData (contramap (\(_, md, _) -> md) mc.designMatrixRow) Nothing
          else pure $ S.namedE "ERROR" S.SMat -- this shouldn't show up in stan code at all
   pure $ ProjModelData projData nNullVecsE' nPredictorsE' dmE pmE
 
@@ -479,7 +482,7 @@ projModelResultAction :: forall outerK md k r .
                          , Typeable outerK
                          )
                       => ModelConfig k md
-                      -> S.ResultAction (ProjData outerK md) () S.DataSetGroupIntMaps r () (ModelResult Text md)
+                      -> S.ResultAction (ProjData outerK md) () S.DataSetGroupIntMaps S.DataSetGroupIntMaps r () (ModelResult Text md)
 projModelResultAction mc = S.UseSummary f where
   f summary _ modelDataAndIndexes_C _ = do
     (modelData, resultIndexesE) <- K.ignoreCacheTime modelDataAndIndexes_C
@@ -492,7 +495,7 @@ projModelResultAction mc = S.UseSummary f where
         (mdMeansL, nvpSDsL) = FL.fold ((,) <$> mdMeansFld <*> nvpSDFld) $ pdRows modelData
         rescaleAlphaBeta xs = if mc.standardizeNVs then zipWith (*) xs nvpSDsL else xs
     stateIM <- K.knitEither
-      $ resultIndexesE >>= S.getGroupIndex (S.RowTypeTag @(ProjData outerK md) @(ProjDataRow outerK md) S.ModelDataT "ProjectionData") stateG
+      $ resultIndexesE >>= S.getGroupIndex (S.RowTypeTag @(ProjDataRow outerK md) "ProjectionData") stateG
     let allStates = IM.elems stateIM
         getVector n = K.knitEither $ S.getVector . fmap CS.mean <$> S.parse1D n (CS.paramStats summary)
         getMatrix n = K.knitEither $ fmap CS.mean <$> S.parse2D n (CS.paramStats summary)

@@ -23,7 +23,7 @@ module BlueRipple.Model.Demographic.TableProducts
   (
     module BlueRipple.Model.Demographic.TableProducts
   , module Numeric.ActiveSet
-  , module Numeric.NNLS.LH
+--  , module Numeric.NNLS.LH
   )
 where
 
@@ -54,7 +54,7 @@ import qualified Data.Vinyl.TypeLevel as V
 import qualified Frames as F
 import qualified Frames.Melt as F
 import qualified Frames.Transform as FT
-import qualified Numeric as Numeric
+--import qualified Numeric as Numeric
 import qualified Numeric.LinearAlgebra as LA
 import qualified Numeric.NLOPT as NLOPT
 import qualified Numeric.NNLS.LH as LH
@@ -667,7 +667,7 @@ diffCovarianceFldMS :: forall outerK k row w .
 diffCovarianceFldMS wl outerKey catKey dat ms cmM = do
   nVs <- nvpProj <$> nullVecsMS ms cmM
   pure $ case ms of
-           (DMS.MarginalStructure subsets ptFld) -> diffCovarianceFld wl outerKey catKey dat
+           (DMS.MarginalStructure _subsets ptFld) -> diffCovarianceFld wl outerKey catKey dat
                                                     nVs
                                                     (fmap snd . FL.fold ptFld)
 
@@ -740,7 +740,7 @@ optimalVector nvps pV tgtV = do
 --      objD v = (DED.klDivP v tgtV, negate $ DED.klGradP' v tgtV)
       objD v = let d =  VS.zipWith (-) v tgtV in (LA.norm_2 d, 2 * d)
       cM = nvpConstraints nvps
-      nVs = fullToProjM nvps
+      _nVs = fullToProjM nvps
 --  K.logLE K.Info $ "Constraints: " <> show (LA.size cM)
 --  K.logLE K.Info $ "Null-Space basis" <> show (LA.size nVs)
 --  let (u, _, _) = LA.compactSVD $ LA.tr cM

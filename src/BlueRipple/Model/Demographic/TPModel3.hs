@@ -63,23 +63,7 @@ import qualified Stan.BuildingBlocks as SBB (rowLength)
 import Stan (TypedList(..))
 import Stan.Operators
 import qualified CmdStan as CS
-{-
-import qualified Stan.ModelBuilder as SMB
-import qualified Stan.ModelRunner as SMR
-import qualified Stan.ModelConfig as SC
-import qualified Stan.Parameters as SP
-import qualified Stan.RScriptBuilder as SR
-import qualified Stan.ModelBuilder.BuildingBlocks as SBB
-import qualified Stan.ModelBuilder.Distributions as SMD
-import qualified Stan.ModelBuilder.DesignMatrix as DM
-import qualified Stan.ModelBuilder.TypedExpressions.Types as TE
-import qualified Stan.ModelBuilder.TypedExpressions.Statements as TE
-import qualified Stan.ModelBuilder.TypedExpressions.Indexing as TEI
-import qualified Stan.ModelBuilder.TypedExpressions.Operations as TEO
-import qualified Stan.ModelBuilder.TypedExpressions.DAG as DAG
-import qualified Stan.ModelBuilder.TypedExpressions.StanFunctions as SF
-import Stan.ModelBuilder.TypedExpressions.TypedList (TypedList(..))
--}
+
 import qualified Flat
 import Flat.Instances.Vector ()
 
@@ -206,7 +190,10 @@ data ProjData outerK =
   , pdRows :: [ProjDataRow outerK]
   }
 
-type ProjDataRTT a = S.RowTypeTag (ProjData a) (ProjDataRow a)
+modelIDT :: S.InputDataType S.ModelDataT (ProjData outerK)
+modelIDT = S.ModelData
+
+type ProjDataRTT a = S.RowTypeTag (ProjDataRow a)
 {-
 newtype RecordKey ks = RecordKey (F.Record ks)
 
@@ -300,12 +287,12 @@ predictedJoint onSimplexM wgtLens p gk covariates keyedProduct = do
 stateG :: S.GroupTypeTag Text
 stateG = S.GroupTypeTag "State"
 
-stateGroupBuilder :: (Foldable f, Typeable outerK)
+stateGroupBuilder :: forall f outerK . (Foldable f, Typeable outerK)
                   => (outerK -> Text) -> f Text -> S.StanDataBuilderEff S.ModelDataT (ProjData outerK) (ProjDataRTT outerK)
 stateGroupBuilder saF states = do
-  projData <- S.addData "ProjectionData" S.ModelDataT (S.ToFoldable pdRows)
-  S.addGroupIndexForData stateG projData $ S.makeIndexFromFoldable show (saF . pdKey) states
-  S.addGroupIntMapForData stateG projData $ S.dataToIntMapFromFoldable (saF . pdKey) states
+  projData <- S.addData "ProjectionData" (modelIDT @outerK) (S.ToFoldable pdRows)
+  S.addGroupIndexForData (modelIDT @outerK) stateG projData $ S.makeIndexFromFoldable show (saF . pdKey) states
+  S.addGroupIntMapForData (modelIDT @outerK) stateG projData $ S.dataToIntMapFromFoldable (saF . pdKey) states
   pure projData
 
 data ProjModelData outerK =
@@ -366,10 +353,10 @@ projModelData mc projData = do
 --  projData <- S.dataSetTag @(ProjDataRow outerK) S.ModelData "ProjectionData"
 --  let projMER :: S.MatrixRowFromData (ProjDataRow outerK) --(outerK, md Double, VS.Vector Double)
 --      projMER = S.MatrixRowFromData "nvp" Nothing (modelNumNullVecs mc) (\(_, _, v) -> VU.convert v)
-  pmE <- S.addRealData @S.ModelDataT projData "projection" Nothing Nothing pdCoeff
+  pmE <- S.addRealData (modelIDT @outerK) projData "projection" Nothing Nothing pdCoeff
   let (_, nPredictorsE') = S.designMatrixColDimBinding mc.designMatrixRow Nothing
   dmE <- if SBB.rowLength mc.designMatrixRow > 0
-         then S.addDesignMatrix @S.ModelDataT projData (contramap pdCovariates mc.designMatrixRow) Nothing
+         then S.addDesignMatrix (modelIDT @outerK) projData (contramap pdCovariates mc.designMatrixRow) Nothing
          else pure $ S.namedE "ERROR" S.SMat -- this shouldn't show up in stan code at all
   pure $ ProjModelData projData nPredictorsE' dmE pmE
 
@@ -653,7 +640,7 @@ projModelResultAction :: forall outerK r .
                          , Typeable outerK
                          )
                       => ModelConfig
-                      -> S.ResultAction (ProjData outerK) () S.DataSetGroupIntMaps r () (ComponentPredictor Text)
+                      -> S.ResultAction (ProjData outerK) () S.DataSetGroupIntMaps S.DataSetGroupIntMaps r () (ComponentPredictor Text)
 projModelResultAction mc = S.UseSummary f where
   f summary _ modelDataAndIndexes_C _ = do
     (modelData, resultIndexesE) <- K.ignoreCacheTime modelDataAndIndexes_C
@@ -665,7 +652,7 @@ projModelResultAction mc = S.UseSummary f where
         (mdMeansL, nvpSD) = FL.fold ((,) <$> mdMeansFld <*> nvpSDFld) $ pdRows modelData
         rescaleAlphaBeta x = if mc.standardizeNVs then x * nvpSD else x
     stateIM <- K.knitEither
-      $ resultIndexesE >>= S.getGroupIndex (S.RowTypeTag @(ProjData outerK) @(ProjDataRow outerK) S.ModelDataT "ProjectionData") stateG
+      $ resultIndexesE >>= S.getGroupIndex (S.RowTypeTag @(ProjDataRow outerK) "ProjectionData") stateG
     let allStates = IM.elems stateIM
         getScalar n = K.knitEither $ S.getScalar . fmap CS.mean <$> S.parseScalar n (CS.paramStats summary)
         getVector n = K.knitEither $ S.getVector . fmap CS.mean <$> S.parse1D n (CS.paramStats summary)

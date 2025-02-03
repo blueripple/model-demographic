@@ -136,7 +136,10 @@ instance (V.RMap rs, FS.RecFlat rs) => Flat.Flat (ProjDataRow rs) where
 data ProjData rs = ProjData {pdNNullVecs :: Int, pdNPredictors :: Int, pdRows :: [ProjDataRow rs]} deriving stock (Generic)
 deriving anyclass instance (Flat.Flat (ProjDataRow rs)) => Flat.Flat (ProjData rs)
 
-type ProjDataRTT rs = S.RowTypeTag (ProjData rs) (ProjDataRow rs)
+modelIDT :: S.InputDataType S.ModelDataT (ProjData rs)
+modelIDT = S.ModelData
+
+type ProjDataRTT rs = S.RowTypeTag (ProjDataRow rs)
 
 data SlopeIntercept = SlopeIntercept { siSlope :: Double, siIntercept :: Double} deriving stock (Show, Generic)
 
@@ -172,12 +175,12 @@ modelResultNVPs modelResult geoKey catKey pdF r = do
 stateG :: S.GroupTypeTag Text
 stateG = S.GroupTypeTag "State"
 
-stateGroupBuilder :: (Foldable f, Typeable rs)
+stateGroupBuilder :: forall f rs . (Foldable f, Typeable rs)
                   => (F.Record rs -> Text) -> f Text -> S.StanDataBuilderEff S.ModelDataT (ProjData rs) (ProjDataRTT rs)
 stateGroupBuilder saF states = do
-  projData <- S.addData "ProjectionData" S.ModelDataT (S.ToFoldable pdRows)
-  S.addGroupIndexForData stateG projData $ S.makeIndexFromFoldable show (saF . projRowRec) states
-  S.addGroupIntMapForData stateG projData $ S.dataToIntMapFromFoldable (saF . projRowRec) states
+  projData <- S.addData "ProjectionData" (modelIDT @rs) (S.ToFoldable pdRows)
+  S.addGroupIndexForData (modelIDT @rs) stateG projData $ S.makeIndexFromFoldable show (saF . projRowRec) states
+  S.addGroupIntMapForData (modelIDT @rs) stateG projData $ S.dataToIntMapFromFoldable (saF . projRowRec) states
   pure projData
 
 data ProjModelData r =
@@ -238,17 +241,17 @@ projModelData mc catKey countF predF projData = do
   let projMER :: S.MatrixRowFromData (ProjDataRow r) --(outerK, md Double, VS.Vector Double)
       projMER = S.MatrixRowFromData "nvp" Nothing (modelNumNullVecs mc) (\(ProjDataRow _ v) -> VU.convert v)
       -- convert is here because we want unboxed vectors for JSON but hmatix uses storable vectors for FFI
-  (pmE, nNullVecsE') <- S.add2dMatrixData @S.ModelDataT projData projMER Nothing Nothing
+  (pmE, nNullVecsE') <- S.add2dMatrixData (modelIDT @rs) projData projMER Nothing Nothing
 --  let nNullVecsE' = S.mrfdColumnsE projMER
   let (_, nAlphasE') = S.designMatrixColDimBinding mc.alphaDMR Nothing
   alphaDME <- if SBB.rowLength mc.alphaDMR > 0
-              then S.addDesignMatrix @S.ModelDataT projData (contramap (catKey . projRowRec) mc.alphaDMR) Nothing
+              then S.addDesignMatrix (modelIDT @rs) projData (contramap (catKey . projRowRec) mc.alphaDMR) Nothing
               else pure $ S.namedE "ERROR" S.SMat -- this shouldn't show up in stan code at all
   let (_, nPredictorsE') = S.designMatrixColDimBinding mc.predDMR Nothing
   dmE <- if SBB.rowLength mc.predDMR > 0
-         then S.addDesignMatrix @S.ModelDataT projData (contramap (predF . projRowRec) mc.predDMR) Nothing
+         then S.addDesignMatrix (modelIDT @rs) projData (contramap (predF . projRowRec) mc.predDMR) Nothing
          else pure $ S.namedE "ERROR" S.SMat -- this shouldn't show up in stan code at all
-  countsE' <- S.addCountData @S.ModelDataT projData "count" (countF . projRowRec)
+  countsE' <- S.addCountData (modelIDT @rs) projData "count" (countF . projRowRec)
   pure $ ProjModelData projData nNullVecsE' nAlphasE' alphaDME nPredictorsE' dmE pmE countsE'
 
 -- S states

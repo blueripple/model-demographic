@@ -369,13 +369,13 @@ aCSa5ByCD cdFromPUMA stateXWalk typedACS year cdYearM = K.wrapPrefix "Model.Demo
         Just y -> over BRDF.year (const y)
   pUMAsToCDs @CategoricalsA5 cdFromPUMA $ fmap adjCDYear $  F.filterFrame ((== year) . view BRDF.year) acsByPUMA
 
-cachedACSa5ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
+cachedACSa5ByCD' :: (K.KnitEffects r, BRK.CacheEffects r)
                 => PUMS.ACSWindow
                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
                 -> Int
                 -> Maybe Int
                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ByCDR))
-cachedACSa5ByCD acsWindow source year cdYearM = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
+cachedACSa5ByCD' _acsWindow source year cdYearM = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
   typedACS_C <- source
   cdFromPUMA_C <- BR.allCDFromPUMA2012Loader
   stateXWalk_C <- BRL.stateAbbrCrosswalkLoader
@@ -384,6 +384,19 @@ cachedACSa5ByCD acsWindow source year cdYearM = K.wrapPrefix "Model.Demographic.
         Nothing -> "model/demographic/data/acs" <> show year <> "ByCD_a5.bin"
         Just y -> "model/demographic/data/acs" <> show year <> "ByCD" <> show y <> "_a5.bin"
   BRK.retrieveOrMakeFrame cacheKey deps $ \(acs, cdFromPUMA, stateXWalk) -> aCSa5ByCD cdFromPUMA stateXWalk acs year cdYearM
+
+cachedACSa5ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
+                => PUMS.ACSWindow
+                -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec PUMS.PUMS_Typed))
+                -> Int
+                -> Maybe Int
+                -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec ACSa5ByCDR))
+cachedACSa5ByCD acsWindow source year cdYearM = K.wrapPrefix "Model.Demographic.cachedACSByCD" $ do
+  let  cacheKey = case cdYearM of
+         Nothing -> "model/demographic/data/acs" <> show year <> "ByCD_a5.bin"
+         Just y -> "model/demographic/data/acs" <> show year <> "ByCD" <> show y <> "_a5.bin"
+  acsByPUMA_C <- cachedACSa5ByPUMA acsWindow source year
+  cachedPUMAsToCDs @CategoricalsA5 cacheKey acsByPUMA_C
 
 cachedACSa6ByCD :: (K.KnitEffects r, BRK.CacheEffects r)
                 => PUMS.ACSWindow

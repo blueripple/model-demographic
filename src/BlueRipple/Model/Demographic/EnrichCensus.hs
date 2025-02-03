@@ -65,7 +65,7 @@ import qualified Frames.Constraints as FC
 import qualified Frames.Serialize as FS
 import qualified Frames.Streamly.Transform as FST
 import qualified Frames.Streamly.InCore as FSI
-import qualified Frames.Streamly.Streaming.Streamly as FSS
+--import qualified Frames.Streamly.Streaming.Streamly as FSS
 import qualified Frames.Streamly.TH as FSS (DefaultStream)
 import qualified Frames.MapReduce as FMR
 import qualified Frames.Folds as FF
@@ -78,7 +78,7 @@ import qualified Flat
 
 import qualified Streamly.Data.Stream as St
 import qualified Streamly.Data.Fold as StF
-import qualified Streamly.Internal.Data.Stream as St (concat)
+--import qualified Streamly.Internal.Data.Stream as St (concat)
 import qualified Streamly.Data.Stream.Prelude as StC
 import qualified Streamly.Data.StreamK as StK
 

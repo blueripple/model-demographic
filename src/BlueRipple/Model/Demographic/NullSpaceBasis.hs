@@ -208,7 +208,7 @@ data CatMap k where
   CatMap :: [Char] -> (Char -> Maybe Int) -> (Char -> Maybe Int) -> CatMap k
 
 catMapDimensions :: CatMap k -> Maybe Dimensions
-catMapDimensions (CatMap cns lp ls) = Dimensions <$> traverse ls cns
+catMapDimensions (CatMap cns _lp ls) = Dimensions <$> traverse ls cns
 
 reTypeCatMap :: forall k' k . CatMap k -> CatMap k'
 reTypeCatMap (CatMap c ls lp) = CatMap c ls lp
@@ -249,8 +249,8 @@ subsetFromKnownChars (CatMap _ lp _) = traverse (fmap Subset . traverse lp)
 interactionBasisCM' :: Traversable f => CatMap k -> f (Known [Char]) -> Maybe (LA.Matrix LA.R)
 interactionBasisCM' cm knownSubsetsC = do
   dims <- catMapDimensions cm
-  knownSubsets <- knownsToSubsets <$> traverse (subsetFromKnownChars cm) knownSubsetsC
-  pure $ LA.fromColumns $ mconcat $ fmap (LA.toColumns . subsetInteractionBasis dims) $ Set.toList knownSubsets
+  knownSubsets' <- knownsToSubsets <$> traverse (subsetFromKnownChars cm) knownSubsetsC
+  pure $ LA.fromColumns $ mconcat $ fmap (LA.toColumns . subsetInteractionBasis dims) $ Set.toList knownSubsets'
 --  knownSubsets <- Set.fromList <$> (traverse subsetFromChars knownSubsets)
 --  pure $ interactionBasis dims subsets
 
@@ -261,12 +261,12 @@ interactionBasisCM cam = interactionBasisCM' (camCatMap cam) (camKnowns cam)
 nullSpacePartitionCM'' :: Traversable f => CatMap k -> f (Known [Char]) -> Maybe (LA.Matrix LA.R, LA.Matrix LA.R)
 nullSpacePartitionCM'' cm knownSubsetsC = do
   dims <- catMapDimensions cm
-  knownSubsets <- knownsToSubsets <$> traverse (subsetFromKnownChars cm) knownSubsetsC
+  knownSubsets' <- knownsToSubsets <$> traverse (subsetFromKnownChars cm) knownSubsetsC
   let allSubsets = knownsToSubsets [KnownMarginal $ Subset [1..(length $ dimensions dims)]]
 --  powerSetOfKnownSubsets <- Set.fromList . fmap Subset . mconcat . fmap (powerset . subset) <$> (traverse subsetFromChars $ Set.toList knownSubsets)
 --  unionOfKnownSubsets <- Set.fromList <$> (traverse subsetFromChars $ Set.toList knownSubsets)
   constraints <- interactionBasisCM' cm knownSubsetsC
-  let nullSpace = LA.fromColumns $ mconcat $ fmap (LA.toColumns . subsetInteractionBasis dims) $ Set.toList $ Set.difference allSubsets knownSubsets
+  let nullSpace = LA.fromColumns $ mconcat $ fmap (LA.toColumns . subsetInteractionBasis dims) $ Set.toList $ Set.difference allSubsets knownSubsets'
   pure $ (LA.tr constraints, LA.tr nullSpace)
 
 nullSpacePartitionCM' :: Traversable f => CatMap k -> f (Known [Char]) -> Maybe NullSpacePartition

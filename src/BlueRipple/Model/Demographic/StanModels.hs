@@ -127,7 +127,10 @@ addTermMaybe mA combine e = case mA of
   Just a -> combine a e
 
 type Row rs a = (F.Record rs, a)
-type ACSRowTag rs a = S.RowTypeTag [Row rs a] (Row rs a)
+type ACSRowTag rs a = S.RowTypeTag (Row rs a)
+
+modelIDT :: forall rs a . S.InputDataType S.ModelDataT [Row rs a]
+modelIDT = S.ModelData
 
 data ModelData rs = ModelData
   {
@@ -159,15 +162,15 @@ modelData dmr mc acsData = do
       nStates' = S.groupSizeE stateGroup
   let trialsF v = v VU.! 0 + v VU.! 1
       successesF v = v VU.! 1
-  trials' <- S.addCountData @S.ModelDataT acsData "trials" (trialsF . snd)
-  successes' <- S.addCountData @S.ModelDataT acsData "successes" (successesF . snd)
+  trials' <- S.addCountData (modelIDT @rs @(VU.Vector Int)) acsData "trials" (trialsF . snd)
+  successes' <- S.addCountData (modelIDT @rs @(VU.Vector Int)) acsData "successes" (successesF . snd)
 
-  acsMat' <- S.addDesignMatrix @S.ModelDataT acsData (contramap fst dmr) Nothing
+  acsMat' <- S.addDesignMatrix (modelIDT @rs @(VU.Vector Int)) acsData (contramap fst dmr) Nothing
   let (_, nPredictors') = S.designMatrixColDimBinding dmr Nothing
   mDensity' <- case includeDensity mc of
     False -> pure Nothing
     True -> do
-      rawDensity <- S.addRealData @S.ModelDataT acsData "rawLogDensity" Nothing Nothing (DDP.safeLog . F.rgetField @DT.PWPopPerSqMile . fst)
+      rawDensity <- S.addRealData (modelIDT @rs @(VU.Vector Int)) acsData "rawLogDensity" Nothing Nothing (DDP.safeLog . F.rgetField @DT.PWPopPerSqMile . fst)
       stdDensity <- S.inBlock S.SBTransformedData $ S.addFromCodeWriter $ do
         let m = S.mean rawDensity
             sd = S.sqrt (S.variance rawDensity)
@@ -294,14 +297,12 @@ betaBinomialModel dmr mc acsTag = do
   bParams <- basicParameters mc md
   let at x n = S.sliceE S.s0 n x
 --      by v i = S.indexE S.s0 i v
-      eltTimes = S.binaryOpE (S.SElementWise S.SMultiply)
-      eltDivide = S.binaryOpE (S.SElementWise S.SDivide)
   phiP <- S.addTransformedHP
           (S.NamedDeclSpec "phi" $ S.vectorSpec md.nPredictors)
           S.TransformedParametersBlock
           (Just $ S.Modifiers [S.lowerM $ S.realE 0, S.upperM $ S.realE 1]) -- constraints on phi_raw
           (S.DensityWithArgs S.betaS (S.realE 99 :> S.realE 1 :> TNil)) -- phi_raw is beta distributed
-          (\t -> t `eltDivide` (S.realE 1 `S.minusE` t)) -- phi = phi_raw / (1 - phi_raw), component-wise
+          (\t -> t |./| (S.realE 1 `S.minusE` t)) -- phi = phi_raw / (1 - phi_raw), component-wise
 
   let phi = S.parameterExpr phiP
       vSpec = S.vectorSpec md.nData
@@ -332,13 +333,13 @@ betaBinomialModel dmr mc acsTag = do
     ((\(a, b) n -> md.trials `at` n :> a `at` n :> b `at` n :> TNil) <$> tempPs)
   pure ()
 
-groupBuilderState :: (F.ElemOf rs GT.StateAbbreviation, Typeable rs, Typeable a)
+groupBuilderState :: forall rs a . (F.ElemOf rs GT.StateAbbreviation, Typeable rs, Typeable a)
                   => [Text]
                   -> S.StanDataBuilderEff S.ModelDataT [(F.Record rs, a)] (ACSRowTag rs a)
 groupBuilderState states = do
-  acsData <- S.addData "ACS" S.ModelDataT (S.ToFoldable id)
-  S.addGroupIndexForData stateGroup acsData $ S.makeIndexFromFoldable show (F.rgetField @GT.StateAbbreviation . fst) states
-  S.addGroupIntMapForData stateGroup acsData $ S.dataToIntMapFromFoldable (F.rgetField @GT.StateAbbreviation . fst) states
+  acsData <- S.addData "ACS" (modelIDT @rs @a) (S.ToFoldable id)
+  S.addGroupIndexForData (modelIDT @rs @a) stateGroup acsData $ S.makeIndexFromFoldable show (F.rgetField @GT.StateAbbreviation . fst) states
+  S.addGroupIntMapForData (modelIDT @rs @a) stateGroup acsData $ S.dataToIntMapFromFoldable (F.rgetField @GT.StateAbbreviation . fst) states
   pure acsData
 
 {-
@@ -552,7 +553,7 @@ stateModelResultAction :: forall rs ks a r gq.
                           )
                        => ModelConfig Text
                        -> S.DesignMatrixRow (F.Record ks)
-                       -> S.ResultAction [(F.Record rs, a)] gq S.DataSetGroupIntMaps r () (ModelResult Text ks)
+                       -> S.ResultAction [(F.Record rs, a)] gq S.DataSetGroupIntMaps S.DataSetGroupIntMaps r () (ModelResult Text ks)
 stateModelResultAction mc dmr = S.UseSummary f where
   f summary _ modelDataAndIndexes_C _ = do
 --    let resultCacheKey = modelID mc <> "_" <> S.dmName dmr <> modelConfigSuffix mc
@@ -562,7 +563,7 @@ stateModelResultAction mc dmr = S.UseSummary f where
         msFld = (,) <$> FL.mean <*> FL.std
         (ldMean, ldSigma) = FL.fold (FL.premap premap msFld) modelData'
     stateIM <- K.knitEither
-      $ resultIndexesE >>= S.getGroupIndex (S.RowTypeTag @_ @(F.Record rs, a) S.ModelDataT "ACS") stateGroup
+      $ resultIndexesE >>= S.getGroupIndex (S.RowTypeTag @(Row rs a) "ACS") stateGroup
     let getScalar n = K.knitEither $ S.getScalar . fmap CS.mean <$> S.parseScalar n (CS.paramStats summary)
         getVector n = K.knitEither $ S.getVector . fmap CS.mean <$> S.parse1D n (CS.paramStats summary)
     alpha' <- case mc.includeAlpha0  of
@@ -598,9 +599,9 @@ categoricalModel :: forall rs . Typeable rs
 categoricalModel numInCat dmr acsData = do
 --  acsData <- S.dataSetTag @(F.Record rs, VU.Vector Int) S.ModelData "ACS"
   let nDataE = S.dataSetSizeE acsData
-  nInCatE <- S.addFixedIntModel @[Row rs (VU.Vector Int)]"K" numInCat
-  countsE <- S.addIntArrayData @S.ModelDataT acsData "counts" nInCatE (Just 0) Nothing snd
-  acsMatE <- S.addDesignMatrix @S.ModelDataT acsData (contramap fst dmr) Nothing
+  nInCatE <- S.addFixedIntModel @[Row rs (VU.Vector Int)] "K" numInCat
+  countsE <- S.addIntArrayData (modelIDT @rs @(VU.Vector Int)) acsData "counts" nInCatE (Just 0) Nothing snd
+  acsMatE <- S.addDesignMatrix (modelIDT @rs @(VU.Vector Int)) acsData (contramap fst dmr) Nothing
   let (_, nPredictorsE) = S.designMatrixColDimBinding dmr Nothing
   -- parameters
   -- zero vector for identifiability trick
