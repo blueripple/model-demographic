@@ -320,7 +320,7 @@ projModelAlpha mc pmd = do
         $ S.addBuildParameter
         $ S.simpleTransformedP hierAlphaNDS [] (rawP :> alphaPs) S.TransformedParametersBlock
         $ \(rmE :> muE :> sigmaE :> TNil) ->
-            let inner pE s a k = [indexSAK s a k pE S.|=| (indexAK a k muE |+| (indexAK a k sigmaE |*| indexSAK s a k rmE))]
+            let inner pE s a k = [indexSAK s a k pE |=| (indexAK a k muE |+| (indexAK a k sigmaE |*| indexSAK s a k rmE))]
             in S.DeclCodeF $ S.addStmt . loopSAK . inner
 
 projModelParameters :: ModelConfig fullK alphaK pd -> ProjModelData rs -> S.StanModelBuilderEff (ProjData rs) () ProjModelParameters
@@ -373,8 +373,8 @@ projModel rc alphaKey countF predF mc projData = do
       stdNVPs <- S.declareNW (S.NamedDeclSpec "stdNVPs" $ S.matrixSpec nRowsE mData.nNullVecsE)
       S.addStmt
         $ loopNVs
-        $ \k -> S.grouped [ (sds !! k) S.|=| S.sd (mData.projectionsE `S.atCol` k)
-                          , stdNVPs `S.atCol` k S.|=| ((mData.projectionsE `S.atCol` k) |/| (sds !! k))]
+        $ \k -> S.grouped [ (sds !! k) |=| S.sd (mData.projectionsE `S.atCol` k)
+                          , stdNVPs `S.atCol` k |=| ((mData.projectionsE `S.atCol` k) |/| (sds !! k))]
       let inverse :: (t ~ S.BinaryResultT S.BMultiply S.EReal t) => S.IntE -> S.UExpr t -> S.UExpr t --S.UExpr (S.BinaryResultT S.BMultiply S.EReal t)
           inverse k psCol = sds !! k |*| psCol
       pure (stdNVPs, inverse)

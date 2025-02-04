@@ -336,7 +336,7 @@ modelBeta mc pmd = do
           (brP :> TNil) S.TransformedParametersBlock
           (\(br :> TNil) -> S.DeclCodeF
             $ \b -> S.addStmt $ S.loopSized nStatesE "s"
-                    $ \ns -> b !! ns S.|=| appendZeroCol (br !! ns))
+                    $ \ns -> b !! ns |=| appendZeroCol (br !! ns))
           TNil
           (\_ _ -> pure ())
 
@@ -356,7 +356,7 @@ projModel rc alphaKeyF predF mc dataRtt = do
   totalCountE <- S.inBlock S.SBTransformedDataGQ $ S.addFromCodeWriter $ do
     tc <- S.declareNW
       (S.NamedDeclSpec "TCount" $ S.array1Spec nRowsE $ S.addVMs (S.Modifiers [S.lowerM $ S.intE 0]) S.intSpec)
-    S.addStmt $ S.loopSized nRowsE "n" $ \n -> (tc !! n) S.|=| S.sumInt (mData.countsE !! n)
+    S.addStmt $ S.loopSized nRowsE "n" $ \n -> (tc !! n) |=| S.sumInt (mData.countsE !! n)
     pure tc
   betaP <- modelBeta mc mData
   let reIndexByState = S.indexE S.s0 (S.dataByGroupIndexE mData.dataTag stateG)

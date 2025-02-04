@@ -353,8 +353,8 @@ projModel rc mc projData = do
         $ \k -> let colk :: S.UExpr t -> S.UExpr (S.Sliced S.N1 t)
                     colk = flip sndI k --S.sliceE S.s1 k x
                 in
-                  S.grouped [ (sds `fstI` k) S.|=| S.sd (colk mData.projectionsE)
-                            , colk stdNVPs S.|=| (colk mData.projectionsE |/| (sds `fstI` k))]
+                  S.grouped [ (sds `fstI` k) |=| S.sd (colk mData.projectionsE)
+                            , colk stdNVPs |=| (colk mData.projectionsE |/| (sds `fstI` k))]
       let inverse :: (t ~ S.BinaryResultT S.BMultiply S.EReal t) => S.IntE -> S.UExpr t -> S.UExpr t --S.UExpr (TEO.BinaryResultT TEO.BMultiply S.EReal t)
           inverse k psCol = sds `fstI` k `S.timesE` psCol
       pure (stdNVPs, inverse)
