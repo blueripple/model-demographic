@@ -30,9 +30,6 @@ import qualified BlueRipple.Model.Demographic.DataPrep as DDP
 import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified BlueRipple.Model.Demographic.TableProducts as DTP
 import qualified BlueRipple.Model.StanTools as MST
-
-
-
 import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Geographic as GT
 import qualified BlueRipple.Data.ACS_PUMS as ACS
@@ -59,7 +56,7 @@ import Control.Lens (view, _2)
 import GHC.TypeLits (Symbol)
 
 import qualified Stan as S
-import qualified Stan.BuildingBlocks as SBB (rowLength)
+import qualified Stan.Libraries.BuildingBlocks as SBB (rowLength)
 import Stan (TypedList(..))
 import Stan.Operators
 import qualified CmdStan as CS

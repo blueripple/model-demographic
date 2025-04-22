@@ -55,7 +55,7 @@ import qualified Data.Vinyl.TypeLevel as V
 import Control.Lens (view)
 
 import qualified Stan as S
-import qualified Stan.BuildingBlocks as SBB (rowLength)
+import qualified Stan.Libraries.BuildingBlocks as SBB (rowLength)
 import Stan (TypedList(..))
 import Stan.Operators
 

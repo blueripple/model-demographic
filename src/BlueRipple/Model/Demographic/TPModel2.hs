@@ -62,7 +62,7 @@ import Control.Lens (view, Lens')
 import GHC.TypeLits (Symbol)
 
 import qualified Stan as S
-import qualified Stan.BuildingBlocks as SBB (rowLength)
+import qualified Stan.Libraries.BuildingBlocks as SBB (rowLength)
 import Stan (TypedList(..))
 import Stan.Operators
 --import qualified CmdStan as CS

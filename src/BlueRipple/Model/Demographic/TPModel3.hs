@@ -30,7 +30,6 @@ import qualified BlueRipple.Model.Demographic.EnrichData as DED
 import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified BlueRipple.Model.Demographic.TableProducts as DTP
 import qualified BlueRipple.Model.StanTools as MST
-
 import qualified BlueRipple.Data.CachingCore as BRCC
 import qualified BlueRipple.Data.Keyed as BRK
 import qualified BlueRipple.Data.Types.Demographic as DT
@@ -59,7 +58,7 @@ import Control.Lens (Lens', view, over, (^.), _2)
 import GHC.TypeLits (Symbol)
 
 import qualified Stan as S
-import qualified Stan.BuildingBlocks as SBB (rowLength)
+import qualified Stan.Libraries.BuildingBlocks as SBB (rowLength)
 import Stan (TypedList(..))
 import Stan.Operators
 import qualified CmdStan as CS
@@ -290,9 +289,10 @@ stateG = S.GroupTypeTag "State"
 stateGroupBuilder :: forall f outerK . (Foldable f, Typeable outerK)
                   => (outerK -> Text) -> f Text -> S.StanDataBuilderEff S.ModelDataT (ProjData outerK) (ProjDataRTT outerK)
 stateGroupBuilder saF states = do
+  (stateG', _nStates) <- S.addGroupFromCollection @_ @_ @(ProjData outerK) S.ModelData "State" states
   projData <- S.addData "ProjectionData" (modelIDT @outerK) (S.ToFoldable pdRows)
-  S.addGroupIndexForData (modelIDT @outerK) stateG projData $ S.makeIndexFromFoldable show (saF . pdKey) states
-  S.addGroupIntMapForData (modelIDT @outerK) stateG projData $ S.dataToIntMapFromFoldable (saF . pdKey) states
+  S.addGroupIndexForData (modelIDT @outerK) stateG' projData $ S.makeIndexFromFoldable show (saF . pdKey) states
+  S.addGroupIntMapForData (modelIDT @outerK) stateG' projData $ S.dataToIntMapFromFoldable (saF . pdKey) states
   pure projData
 
 data ProjModelData outerK =
