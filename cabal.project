@@ -1,22 +1,18 @@
-packages: ./ ~/DataScience/data-science-utils ~/DataScience/nlopt-haskell
---          ~/DataScience/haskell-stan ~/DataScience/haskell-stan/haskell-stan-language ~/DataScience/haskell-stan/haskell-stan-functions ~/DataScience/haskell-stan/haskell-stan-builder ~/DataScience/haskell-stan/haskell-stan-building-blocks ~/DataScience/haskell-stan/haskell-stan-runner
+packages: ./
+
 jobs: 4
 with-compiler: ghc
 
---allow-newer: freer-simple:template-haskell
---           , foldl-statistics:hashable, foldl-statistics:profunctors
---           , cereal-time:time
---           , nonlinear-optimization:primitive
---           , nonlinear-optimization:vector
---           , generic-trie:base
---           , polysemy-zoo:constraints
---           , polysemy-zoo:bytestring
---           , polysemy-zoo:ghc-prim
---           , streamly-bytestring:streamly-core
---           , bytestring
---           , base
 
-allow-newer: base, ghc-prim, template-haskell, time, bytestring, containers, hashable, lens, profunctors, primitive, text, vector, constraints, extra
+allow-newer: base, ghc-prim, bytestring, time, primitive, containers, constraints
+           , freer-simple:template-haskell
+           , polysemy-zoo:text
+           , foldl-statistics:hashable, foldl-statistics:profunctors
+           , cereal-time:time
+           , pipes-text:text
+           , tsne:random
+           , nonlinear-optimization:vector
+
 
 flags: +streamly9
 
@@ -40,4 +36,5 @@ import: ../cabal_repo_imports/map-reduce-folds.project
 import: ../cabal_repo_imports/heidi.project
 import: ../cabal_repo_imports/hTensor.project
 import: ../cabal_repo_imports/dependent-hashmap.project
---import: ../../libs/cabal_repo_imports/data-science-utils.project
+import: ../cabal_repo_imports/nlopt-haskell.project
+import: ../../libs/cabal_repo_imports/data-science-utils.project
